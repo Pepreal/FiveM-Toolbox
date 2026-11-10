@@ -22,8 +22,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Pepreal")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 Pepreal. MIT License.")]
 [assembly: AssemblyProduct("FiveM Toolbox")]
-[assembly: AssemblyVersion("0.8.0.0")]
-[assembly: AssemblyFileVersion("0.8.0.0")]
+[assembly: AssemblyVersion("0.8.1.0")]
+[assembly: AssemblyFileVersion("0.8.1.0")]
 
 namespace FiveMFrameCap
 {
@@ -411,7 +411,7 @@ namespace FiveMFrameCap
             return drawnIcon;
         }
 
-        public const string Version = "0.8.0";
+        public const string Version = "0.8.1";
         public const string AppName = "FiveM Toolbox";
         public const string ExeName = "FiveMToolbox";
         public const string Folder = "FiveMToolbox";
@@ -4926,6 +4926,18 @@ namespace FiveMFrameCap
         public event Action PopOut;
         public event Action ReportCopied;
 
+        // A finished job is folded into one line. With StayOpenOnTab (the log in the main window) the jobs that were started while you are on a tab
+        // stay open until you change to another tab; then they fold. A job you opened or folded by hand stays as you left it, and a job with a problem stays open.
+        public bool StayOpenOnTab = false;
+        int tabGen = 0;
+        readonly Dictionary<int, int> seenGen = new Dictionary<int, int>();
+        public void TabChanged() { lock (seenGen) { tabGen++; } dirty = true; }
+
+        // for --log-fold-test
+        public void TestRebuild() { Rebuild(); }
+        public string TestText() { return box.Text; }
+        public void TestToggle(int g) { Toggle(g); }
+
         static readonly string[] ToolNames = new string[] { null, "FiveM cache", "Frame cap", "DNS", "Graphics", "General" };
 
         static IconButton Small(string glyph, int left)
@@ -5010,7 +5022,7 @@ namespace FiveMFrameCap
             Rebuild();
         }
 
-        void OnAdded(LogEntry e) { dirty = true; }
+        void OnAdded(LogEntry e) { if (e.Group != 0) lock (seenGen) { if (!seenGen.ContainsKey(e.Group)) seenGen[e.Group] = tabGen; } dirty = true; }
         void OnGroupEnded() { dirty = true; }
 
         void SetFilter(int idx)
@@ -5139,7 +5151,9 @@ namespace FiveMFrameCap
                 {
                     bool done = AppLog.IsDone(g), problem = false;
                     int gsev = 0; for (int k = i; k < j; k++) { int sv = Severity(list[k].Message); if (list[k].Debug && sv < 4) sv = 0; if (sv > gsev) gsev = sv; if (sv >= 3) problem = true; }
-                    bool open = expanded.ContainsKey(g) ? expanded[g] : (!done || problem);
+                    bool stay = false;
+                    if (StayOpenOnTab) lock (seenGen) { int sg; if (!seenGen.TryGetValue(g, out sg)) { sg = tabGen; seenGen[g] = sg; } stay = sg == tabGen; }
+                    bool open = expanded.ContainsKey(g) ? expanded[g] : (!done || problem || stay);
                     openNow[g] = open;
                     if (open)
                     {
@@ -5565,6 +5579,7 @@ namespace FiveMFrameCap
             Body.Controls.Add(footer);
             Body.SizeChanged += delegate { LayoutFooter(false); };
             logPanel = new LogPanel(false, true);
+            logPanel.StayOpenOnTab = true;
             logPanel.PopOut += ShowLogClick;
             logPanel.ReportCopied += delegate { activity.Finish("ok", Loc.T("Report copied"), Loc.T("The whole log is on your clipboard. Paste it in a message. It has file paths and your PC's name in it.")); };
             footer.Controls.Add(logPanel);
@@ -5626,6 +5641,7 @@ namespace FiveMFrameCap
         public void ShowPage(int p)
         {
             if (PageHook != null) { PageHook(p); return; }
+            if (p != currentPage && logPanel != null) logPanel.TabChanged();     // the jobs of the tab you leave fold up in the log
             currentPage = p;
             if (p != 2 && resetSwitch != null && resetSwitch.Checked) resetSwitch.Checked = false;
             pageCap.Visible = p == 0; pageDns.Visible = p == 1; pageCache.Visible = p == 2; pageGfx.Visible = p == 3;
@@ -6446,6 +6462,9 @@ namespace FiveMFrameCap
             DpiCheck.Tree(pageCache, "FiveM cache tab with Reset mode on", ck);
             DemoResetMode(false);
         }
+
+        // for --log-fold-test: the text of the log as it is shown now
+        public string TestLogText() { logPanel.TestRebuild(); return logPanel.TestText(); }
 
         // for --pure-icon-test: the button of the desktop icon
         public string[] TestPureIconButton() { return new string[] { cacheIcon.Text, cacheIcon.Enabled.ToString(), cacheIcon.Parent != null ? cacheIcon.Parent.GetType().Name : "none" }; }
@@ -9395,7 +9414,7 @@ namespace FiveMFrameCap
                 if (Directory.Exists(oldDir) && !Directory.Exists(newDir)) Directory.Move(oldDir, newDir);
             }
             catch (Exception) { }
-            bool isShot = args.Length >= 2 && (args[0] == "--shot" || args[0] == "--reset-ui-test" || args[0] == "--reset-form-test" || args[0] == "--dpi-test" || args[0] == "--pure-icon-test");
+            bool isShot = args.Length >= 2 && (args[0] == "--shot" || args[0] == "--reset-ui-test" || args[0] == "--reset-form-test" || args[0] == "--dpi-test" || args[0] == "--pure-icon-test" || args[0] == "--log-fold-test");
             bool relaunched = false;
             foreach (string a0 in args) if (a0 == "--page" || a0 == "--relaunch") relaunched = true;
             if (!isShot)
@@ -9470,6 +9489,72 @@ namespace FiveMFrameCap
                 catch (Exception uex) { us.AppendLine("EXCEPTION " + uex); }
                 File.WriteAllText(args[4].Replace(".png", ".txt"), us.ToString());
                 return 0;
+            }
+            if (args.Length >= 2 && args[0] == "--log-fold-test")
+            {
+                // --log-fold-test <outfile>: a finished job in the log stays open while you stay on the tab, and folds up when you change tabs
+                StringBuilder ls = new StringBuilder();
+                int lfail = 0;
+                Action<bool, string> lck = delegate(bool good, string what) { if (!good) lfail++; ls.AppendLine((good ? "PASS  " : "FAIL  ") + what); };
+                Func<string, string, bool> has = delegate(string text, string part) { return text.IndexOf(part, StringComparison.Ordinal) >= 0; };
+                try
+                {
+                    Theme.Force("dark"); Loc.Force("en");
+                    Action pump = delegate { for (int i = 0; i < 8; i++) { Application.DoEvents(); Thread.Sleep(30); } };
+                    Func<string, int> job = delegate(string tag)
+                    {
+                        AppLog.BeginGroup(); AppLog.Add(tag + " one"); AppLog.Add(tag + " two"); AppLog.Add(tag + " three");
+                        List<LogEntry> snap = AppLog.Snapshot();
+                        int g = snap[snap.Count - 1].Group;
+                        AppLog.EndGroup();
+                        return g;
+                    };
+                    // the log on its own
+                    Form host = new Form(); host.Width = 900; host.Height = 500;
+                    LogPanel lp = new LogPanel(false, true); lp.StayOpenOnTab = true; host.Controls.Add(lp); host.Show(); pump();
+                    int ga = job("alpha");
+                    lp.TestRebuild(); string tx = lp.TestText();
+                    lck(has(tx, "[-]") && has(tx, "alpha two"), "a finished job stays open while you stay on the tab");
+                    lp.TabChanged(); lp.TestRebuild(); tx = lp.TestText();
+                    lck(has(tx, "alpha one   ->   alpha three   (3 lines)") && !has(tx, "alpha two"), "it folds into one line when you change tabs");
+                    int gb = job("beta"); lp.TestRebuild(); tx = lp.TestText();
+                    lck(has(tx, "beta two") && !has(tx, "alpha two"), "a job started on the new tab is open, the old one stays folded");
+                    lp.TestToggle(ga); tx = lp.TestText();
+                    lck(has(tx, "alpha two"), "a job you open by hand opens");
+                    lp.TabChanged(); lp.TestRebuild(); tx = lp.TestText();
+                    lck(has(tx, "alpha two") && !has(tx, "beta two"), "after another tab change: your own choice stays open, the other job folds");
+                    int gc = job("gamma"); lp.TestRebuild(); tx = lp.TestText();
+                    lck(has(tx, "gamma two"), "a new job is open");
+                    lp.TestToggle(gc); tx = lp.TestText();
+                    lck(has(tx, "gamma one   ->   gamma three   (3 lines)") && !has(tx, "gamma two"), "a job you fold by hand stays folded while you stay on the tab");
+                    AppLog.BeginGroup(); AppLog.Add("delta one"); AppLog.Add("delta failed to start"); AppLog.Add("delta three"); AppLog.EndGroup();
+                    lp.TabChanged(); lp.TestRebuild(); tx = lp.TestText();
+                    lck(has(tx, "delta failed to start"), "a job with a problem stays open after a tab change");
+                    LogPanel pop = new LogPanel(true, false); Form host2 = new Form(); host2.Width = 900; host2.Height = 500; host2.Controls.Add(pop); host2.Show(); pump();
+                    job("epsilon"); pop.TestRebuild(); tx = pop.TestText();
+                    lck(has(tx, "epsilon one   ->   epsilon three   (3 lines)") && !has(tx, "epsilon two"), "the pop-out log (no tabs) folds a finished job at once, as before");
+                    host2.Close(); host.Close();
+                    // the main window
+                    MainForm mf = new MainForm(0);
+                    mf.Show();
+                    DateTime ldend = DateTime.UtcNow.AddSeconds(8);
+                    while (DateTime.UtcNow < ldend) { Application.DoEvents(); Thread.Sleep(40); }
+                    job("zeta"); tx = mf.TestLogText();
+                    lck(has(tx, "zeta two"), "main window: a finished job is open on the tab where it happened");
+                    mf.ShowPage(1); pump(); tx = mf.TestLogText();
+                    lck(!has(tx, "zeta two") && has(tx, "zeta one   ->   zeta three   (3 lines)"), "main window: it folds when you change to another tab");
+                    job("eta"); tx = mf.TestLogText();
+                    lck(has(tx, "eta two"), "main window: a job on the new tab is open");
+                    mf.ShowPage(1); pump(); tx = mf.TestLogText();
+                    lck(has(tx, "eta two"), "main window: pressing the tab you are on changes nothing");
+                    mf.ShowPage(2); pump(); tx = mf.TestLogText();
+                    lck(!has(tx, "eta two") && !has(tx, "zeta two"), "main window: the next tab change folds it too");
+                    mf.Close();
+                }
+                catch (Exception lex) { lfail++; ls.AppendLine("FAIL  EXCEPTION " + lex); }
+                ls.AppendLine(lfail == 0 ? "ALL PASSED" : "FAILED: " + lfail);
+                File.WriteAllText(args[1], ls.ToString());
+                return lfail == 0 ? 0 : 1;
             }
             if (args.Length >= 2 && args[0] == "--pure-icon-test")
             {

@@ -5,7 +5,11 @@ Tags: NEW, CHANGED, FIXED.
 
 ---
 
-## v0.8.0 - 2026-11-10 (latest)
+## v0.8.1 - 2026-11-10 (latest)
+
+**CHANGED** - **The log keeps a finished job open while you stay on the tab.** *Before, a job (for example the search when the program starts) was folded into one line at once. Now it stays open while you are on the tab where it happened, and it folds up when you change to another tab. A job you open or fold by hand stays as you left it, a job with a problem stays open, and the pop-out log folds a finished job at once, as before.*
+
+## v0.8.0 - 2026-11-10
 
 **FIXED** - **The text was soft on a PC with screen scaling (125 percent, 150 percent).** *The program did not tell Windows that it knows about screen scaling, so Windows drew the window at 100 percent and stretched the picture. Now a normal start says it knows, and the whole window is scaled once when it opens: the letters, the buttons, the grids, the drawn parts, the small windows. Tested at 125 percent on a real screen with a self test that looks at every tab and every small window (blocks that overlap, parts that stick out, text that does not fit, grids with the wrong row height). The new switch --no-dpi starts the program the old way (stretched by Windows), for a PC where the scaling looks wrong. The new switch --dpi-test <file> runs the self test.*
 
