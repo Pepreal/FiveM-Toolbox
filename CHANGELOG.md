@@ -7,6 +7,8 @@ Tags: NEW, CHANGED, FIXED.
 
 ## v0.8.1 - 2026-11-10 (latest)
 
+**CHANGED** - **A line in the log with a result has the colour as its background.** *Before, the text was coloured, and that was hard to see on the light theme. Now the line has a coloured background (green: good, yellow: a small problem, orange: a warning, red: an error, purple: something really broken) and the text keeps the normal colour. It is the same in the light and the dark theme, and the text is easy to read on every colour (checked by a self test).*
+
 **CHANGED** - **The log keeps a finished job open while you stay on the tab.** *Before, a job (for example the search when the program starts) was folded into one line at once. Now it stays open while you are on the tab where it happened, and it folds up when you change to another tab. A job you open or fold by hand stays as you left it, a job with a problem stays open, and the pop-out log folds a finished job at once, as before.*
 
 ## v0.8.0 - 2026-11-10

@@ -5080,6 +5080,26 @@ namespace FiveMFrameCap
             return ColorTranslator.FromHtml(d ? "#e879f9" : "#a21caf");
         }
 
+        // The background of a line with a result (green good, yellow light problem, orange warning, red error, purple broken): the colour of the result mixed into the
+        // log background, so the normal text colour stays easy to read in the light and in the dark theme. (Coloured text was hard to see on white.)
+        static Color Band(int sev)
+        {
+            Color c = sev == 1 ? Theme.Good : sev == 2 ? ColorTranslator.FromHtml(Theme.IsDark ? "#f4cf3c" : "#c99700") : sev == 3 ? SevColor(3) : sev == 4 ? Theme.Bad : SevColor(5);
+            return Fx.Mix(Theme.Bg2, c, Theme.IsDark ? 0.30f : 0.24f);
+        }
+
+        // for --log-color-test
+        public static int TestBand(int sev) { return Band(sev).ToArgb(); }
+        public int[] TestColors(string part)
+        {
+            int i = box.Text.IndexOf(part, StringComparison.Ordinal);
+            if (i < 0) return null;
+            box.Select(i, Math.Min(4, part.Length));
+            int[] r = new int[] { box.SelectionBackColor.ToArgb(), box.SelectionColor.ToArgb() };
+            box.Select(box.TextLength, 0);
+            return r;
+        }
+
         static string Cw(string s) { return s.Replace('~', (char)92); }
 
         static string Esc(string s)
@@ -5114,13 +5134,19 @@ namespace FiveMFrameCap
             int msgTw = Tw(28);
             int cTool = e.Tool == "Frame cap" ? 3 : e.Tool == "DNS" ? 4 : e.Tool == "FiveM cache" ? 5 : e.Tool == "Graphics" ? 13 : 6;
             int cMsg = (e.Debug && sev < 4) ? 1 : sev <= 0 ? 2 : 7 + sev;
+            // a line with a result gets the colour as its BACKGROUND and all its text in the normal text colour (colour 2); a plain line keeps its colours
+            bool band = sev >= 1 && !(e.Debug && sev < 4);
+            int cMark = band ? 2 : 1, cTag = band ? 2 : cTool, cText = band ? 2 : cMsg;
             string tag = "[" + e.Tool + "]";
             int start = plain.Length;
             rtf.Append(Cw("~pard~li")).Append(msgTw).Append(Cw("~fi-")).Append(msgTw);
             rtf.Append(Cw("~tx")).Append(Tw(4)).Append(Cw("~tx")).Append(Tw(14)).Append(Cw("~tx")).Append(msgTw).Append(' ');
-            rtf.Append(Cw("~cf1 ")).Append(Esc(marker)).Append(Cw("~tab ")).Append(Esc(e.Time)).Append(Cw("~tab "));
-            rtf.Append(Cw("~cf")).Append(cTool).Append(' ').Append(Esc(tag)).Append(Cw("~tab "));
-            rtf.Append(Cw("~cf")).Append(cMsg).Append(' ').Append(Esc(message)).Append(Cw("~par "));
+            if (band) rtf.Append(Cw("~highlight")).Append(13 + sev).Append(' ');
+            rtf.Append(Cw("~cf")).Append(cMark).Append(' ').Append(Esc(marker)).Append(Cw("~tab ")).Append(Esc(e.Time)).Append(Cw("~tab "));
+            rtf.Append(Cw("~cf")).Append(cTag).Append(' ').Append(Esc(tag)).Append(Cw("~tab "));
+            rtf.Append(Cw("~cf")).Append(cText).Append(' ').Append(Esc(message));
+            if (band) rtf.Append(Cw("~highlight0"));
+            rtf.Append(Cw("~par "));
             plain.Append(marker).Append('\t').Append(e.Time).Append('\t').Append(tag).Append('\t').Append(message).Append('\n');
             if (headerGroup != 0) headerRanges.Add(new int[] { start, plain.Length, headerGroup });
         }
@@ -5134,7 +5160,7 @@ namespace FiveMFrameCap
             headerRanges.Clear(); openNow.Clear();
             rtf.Append(Cw("{~rtf1~ansi~uc1~deff0{~fonttbl{~f0 Consolas;}}"));
             rtf.Append(Cw("{~colortbl ;")).Append(ColorEntry(Theme.Text2)).Append(ColorEntry(Theme.Text)).Append(ColorEntry(ToolColor("Frame cap")))
-               .Append(ColorEntry(ToolColor("DNS"))).Append(ColorEntry(ToolColor("FiveM cache"))).Append(ColorEntry(Theme.Text2)).Append(ColorEntry(Theme.Bad)).Append(ColorEntry(Theme.Good)).Append(ColorEntry(SevColor(2))).Append(ColorEntry(SevColor(3))).Append(ColorEntry(Theme.Bad)).Append(ColorEntry(SevColor(5))).Append(ColorEntry(ToolColor("Graphics"))).Append('}');
+               .Append(ColorEntry(ToolColor("DNS"))).Append(ColorEntry(ToolColor("FiveM cache"))).Append(ColorEntry(Theme.Text2)).Append(ColorEntry(Theme.Bad)).Append(ColorEntry(Theme.Good)).Append(ColorEntry(SevColor(2))).Append(ColorEntry(SevColor(3))).Append(ColorEntry(Theme.Bad)).Append(ColorEntry(SevColor(5))).Append(ColorEntry(ToolColor("Graphics"))).Append(ColorEntry(Band(1))).Append(ColorEntry(Band(2))).Append(ColorEntry(Band(3))).Append(ColorEntry(Band(4))).Append(ColorEntry(Band(5))).Append('}');
             rtf.Append(Cw("~f0~fs18 "));
 
             int i = 0;
@@ -9414,7 +9440,7 @@ namespace FiveMFrameCap
                 if (Directory.Exists(oldDir) && !Directory.Exists(newDir)) Directory.Move(oldDir, newDir);
             }
             catch (Exception) { }
-            bool isShot = args.Length >= 2 && (args[0] == "--shot" || args[0] == "--reset-ui-test" || args[0] == "--reset-form-test" || args[0] == "--dpi-test" || args[0] == "--pure-icon-test" || args[0] == "--log-fold-test");
+            bool isShot = args.Length >= 2 && (args[0] == "--shot" || args[0] == "--log-color-test" || args[0] == "--reset-ui-test" || args[0] == "--reset-form-test" || args[0] == "--dpi-test" || args[0] == "--pure-icon-test" || args[0] == "--log-fold-test");
             bool relaunched = false;
             foreach (string a0 in args) if (a0 == "--page" || a0 == "--relaunch") relaunched = true;
             if (!isShot)
@@ -9489,6 +9515,58 @@ namespace FiveMFrameCap
                 catch (Exception uex) { us.AppendLine("EXCEPTION " + uex); }
                 File.WriteAllText(args[4].Replace(".png", ".txt"), us.ToString());
                 return 0;
+            }
+            if (args.Length >= 2 && args[0] == "--log-color-test")
+            {
+                // --log-color-test <outfile>: a line with a result has the colour as its BACKGROUND, in the light and in the dark theme. The text stays the normal text colour and is easy to read.
+                StringBuilder cs = new StringBuilder();
+                int cfail = 0;
+                Action<bool, string> cck = delegate(bool good, string what) { if (!good) cfail++; cs.AppendLine((good ? "PASS  " : "FAIL  ") + what); };
+                Func<Color, double> lum = delegate(Color c)
+                {
+                    Func<int, double> ch = delegate(int v) { double x = v / 255.0; return x <= 0.03928 ? x / 12.92 : Math.Pow((x + 0.055) / 1.055, 2.4); };
+                    return 0.2126 * ch(c.R) + 0.7152 * ch(c.G) + 0.0722 * ch(c.B);
+                };
+                Func<Color, Color, double> contrast = delegate(Color a, Color b) { double la = lum(a), lb = lum(b); return (Math.Max(la, lb) + 0.05) / (Math.Min(la, lb) + 0.05); };
+                try
+                {
+                    Loc.Force("en");
+                    foreach (string mode in new string[] { "dark", "light" })
+                    {
+                        Theme.Force(mode);
+                        List<int> bands = new List<int>();
+                        for (int sv = 1; sv <= 5; sv++) bands.Add(LogPanel.TestBand(sv));
+                        string[] msgs = new string[] { "colortest-" + mode + " plain line", "colortest-" + mode + " Backup saved ok", "colortest-" + mode + " still reports it", "colortest-" + mode + " warning here", "colortest-" + mode + " something failed", "colortest-" + mode + " unhandled exception" };
+                        Form host = new Form(); host.Width = 900; host.Height = 500;
+                        LogPanel lp = new LogPanel(false, true); host.Controls.Add(lp); Theme.Apply(host); host.Show();
+                        for (int i = 0; i < msgs.Length; i++) { AppLog.Add(msgs[i]); AppLog.Add("colortest-" + mode + " plain after " + i); }
+                        lp.TestRebuild();
+                        Application.DoEvents(); using (Bitmap sb = new Bitmap(host.Width, host.Height)) { Snap(host, sb); sb.Save(args[1] + "." + mode + ".png", System.Drawing.Imaging.ImageFormat.Png); }   // a picture to look at
+                        for (int sev = 1; sev <= 5; sev++)
+                        {
+                            int[] cc = lp.TestColors(msgs[sev]);
+                            Color band = Color.FromArgb(LogPanel.TestBand(sev));
+                            cck(cc != null && cc[0] == band.ToArgb(), mode + ": severity " + sev + " line has its band as the background (" + (cc != null ? cc[0].ToString("X8") : "none") + ", wanted " + band.ToArgb().ToString("X8") + ")");
+                            cck(cc != null && cc[1] == Theme.Text.ToArgb(), mode + ": severity " + sev + " line has the normal text colour (" + (cc != null ? cc[1].ToString("X8") : "none") + ")");
+                            double cr = contrast(Theme.Text, band);
+                            cck(cr >= 4.5, mode + ": severity " + sev + ": the text is easy to read on its band (contrast " + cr.ToString("0.0") + ", at least 4.5)");
+                            double cv = contrast(Theme.Bg2, band);
+                            cck(cv >= 1.2, mode + ": severity " + sev + ": the band is easy to see against the log background (contrast " + cv.ToString("0.00") + ", at least 1.2)");
+                            int[] after = lp.TestColors("colortest-" + mode + " plain after " + sev);
+                            cck(after != null && !bands.Contains(after[0]), mode + ": the plain line right after it has no band");
+                        }
+                        int[] pl = lp.TestColors(msgs[0]);
+                        cck(pl != null && !bands.Contains(pl[0]), mode + ": a plain line has no band");
+                        bool distinct = true;
+                        for (int i = 0; i < bands.Count; i++) for (int j = i + 1; j < bands.Count; j++) if (bands[i] == bands[j]) distinct = false;
+                        cck(distinct, mode + ": the five bands are five different colours");
+                        host.Close();
+                    }
+                }
+                catch (Exception cex) { cfail++; cs.AppendLine("FAIL  EXCEPTION " + cex); }
+                cs.AppendLine(cfail == 0 ? "ALL PASSED" : "FAILED: " + cfail);
+                File.WriteAllText(args[1], cs.ToString());
+                return cfail == 0 ? 0 : 1;
             }
             if (args.Length >= 2 && args[0] == "--log-fold-test")
             {
