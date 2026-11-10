@@ -10,6 +10,8 @@ The program has four tabs.
 
 ### FiveM cache
 
+![The FiveM cache tab](https://raw.githubusercontent.com/Pepreal/FiveM-Toolbox/main/docs/fivem-cache.png)
+
 Cleans the FiveM cache. There are three levels:
 
 - **Normal clean:** temporary files, logs and crash reports.
@@ -18,7 +20,11 @@ Cleans the FiveM cache. There are three levels:
 
 The program does not clean while FiveM is open. A button closes FiveM for you.
 
+**Desktop icon: pure mode** makes an icon on your desktop that starts FiveM in pure mode (`-pure_1`: FiveM ignores local file changes, for troubleshooting mods).
+
 ### Frame cap
+
+![The Frame cap tab](https://raw.githubusercontent.com/Pepreal/FiveM-Toolbox/main/docs/frame-cap.png)
 
 Sets a frame limit for every FiveM build (every `FiveM_b####_GTAProcess.exe`, and `FiveM.exe`). The box stops at 140 FPS. The GTA V engine was never made for very high frame rates, and players report micro-stutter above about 140 FPS.
 
@@ -30,9 +36,13 @@ Sets a frame limit for every FiveM build (every `FiveM_b####_GTAProcess.exe`, an
 
 ### DNS tools
 
+![The DNS tools tab](https://raw.githubusercontent.com/Pepreal/FiveM-Toolbox/main/docs/dns-tools.png)
+
 Clears the DNS cache (it checks the result and tries again), and changes DNS to Cloudflare, Google or both, with an Undo. These need administrator rights. Windows asks once.
 
 ### Graphics
+
+![The Graphics tab](https://raw.githubusercontent.com/Pepreal/FiveM-Toolbox/main/docs/graphics.png)
 
 Reads FiveM's settings files and changes one line at a time. FiveM must be closed, and a backup is made first.
 
@@ -49,6 +59,7 @@ Go to **Releases** and download `FiveMToolbox.exe`. Double-click it.
 
 - Windows 10 or 11, 64 bit.
 - Nothing to install. The .NET Framework that it needs is part of Windows.
+- The text is sharp on screens with scaling (125 %, 150 %). If it looks wrong on your PC, start the program with `--no-dpi`.
 - Windows may say "Windows protected your PC", because the file is not signed. Click "More info", then "Run anyway".
 - If you do not want to trust a ready-made file, build it yourself (see below), or compare its SHA-256 with the one on the release page.
 
@@ -76,7 +87,7 @@ powershell -ExecutionPolicy Bypass -File source\build.ps1
 
 The exe is made in `app\FiveMToolbox.exe`. Or double-click `source\build-and-run.bat`: it builds and starts the program. `-OutDir <folder>` builds somewhere else.
 
-There are command line switches for diagnostics and self-tests (for example `--nv-probe <file>`, `--vram-probe <file>`, `--tab-order-test <file>`). Most only read. See the source.
+There are command line switches for diagnostics and self-tests (for example `--nv-probe <file>`, `--vram-probe <file>`, `--tab-order-test <file>`, `--dpi-test <file>`). Most only read. See the source.
 
 ## Problems
 

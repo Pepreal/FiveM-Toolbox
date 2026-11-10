@@ -5,7 +5,15 @@ Tags: NEW, CHANGED, FIXED.
 
 ---
 
-## v0.7.0 - 2026-11-10 (latest)
+## v0.8.0 - 2026-11-10 (latest)
+
+**FIXED** - **The text was soft on a PC with screen scaling (125 percent, 150 percent).** *The program did not tell Windows that it knows about screen scaling, so Windows drew the window at 100 percent and stretched the picture. Now a normal start says it knows, and the whole window is scaled once when it opens: the letters, the buttons, the grids, the drawn parts, the small windows. Tested at 125 percent on a real screen with a self test that looks at every tab and every small window (blocks that overlap, parts that stick out, text that does not fit, grids with the wrong row height). The new switch --no-dpi starts the program the old way (stretched by Windows), for a PC where the scaling looks wrong. The new switch --dpi-test <file> runs the self test.*
+
+**NEW** - **A button "Desktop icon: pure mode" on the FiveM cache tab.** *It makes an icon called "FiveM (pure mode)" on your desktop. The icon starts the FiveM.exe of the install that is chosen on the tab with -pure_1 (FiveM then ignores local file changes, for troubleshooting mods), with the FiveM icon. Press the button again and it says the icon is already there; for another install it updates the icon. It never makes a second icon. Tested in a scratch folder, never on your real desktop. New switch --pure-icon-test <file>.*
+
+**FIXED** - **A wrong word in the Spanish texts.** *"Árralo" is now "Ciérralo" (close it).*
+
+## v0.7.0 - 2026-11-10
 
 **NEW** - **Frame cap for NVIDIA cards.** *The program uses the NVIDIA driver's own profile database (nvapi64.dll), the way NVIDIA Profile Inspector does. The setting "Frame Rate Limiter" is set for each FiveM build. A build that is already in a driver profile keeps using that profile, also the one FiveM makes itself ("Cfx.re: ..."). A build in no profile gets a profile of its own. After saving, the program opens the database again and checks that the driver kept the value. "Undo last change" puts the old limit back. A copy of the driver profile files is saved first. If saving needs administrator rights, the message says so.*
 

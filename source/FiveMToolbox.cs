@@ -22,8 +22,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Pepreal")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 Pepreal. MIT License.")]
 [assembly: AssemblyProduct("FiveM Toolbox")]
-[assembly: AssemblyVersion("0.7.0.0")]
-[assembly: AssemblyFileVersion("0.7.0.0")]
+[assembly: AssemblyVersion("0.8.0.0")]
+[assembly: AssemblyFileVersion("0.8.0.0")]
 
 namespace FiveMFrameCap
 {
@@ -192,6 +192,165 @@ namespace FiveMFrameCap
         }
     }
 
+    // ---------------------------------------------------------------- screen scaling
+    // A program that does not say it knows about screen scaling gets its whole picture stretched by Windows
+    // (125 percent = soft letters). So a normal start says it knows (SetProcessDPIAware). Then every size in the
+    // code is a "logical" size (the size at 100 percent). The window is built in logical sizes, and when it loads
+    // it is scaled once (Control.Scale). Code that draws or places things by hand, after that, goes through
+    // Dpi.S (whole pixels) and Dpi.F (fractions). The test switches stay NOT aware, so the old tests see the old layout.
+    static class Dpi
+    {
+        [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
+        [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr hwnd);
+        [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr hwnd, IntPtr dc);
+        [DllImport("gdi32.dll")] static extern int GetDeviceCaps(IntPtr dc, int index);
+
+        public static bool Aware = false;
+        public static float Scale = 1f;      // 1.25 = 125 percent
+
+        // returns the arguments without --dpi-aware
+        public static string[] Init(string[] args)
+        {
+            List<string> rest = new List<string>();
+            bool force = false, normal = true, never = false;
+            for (int i = 0; i < args.Length; i++)
+            {
+                if (args[i] == "--dpi-aware") { force = true; continue; }
+                if (args[i] == "--no-dpi") { never = true; continue; }
+                if (args[i].StartsWith("--") && args[i] != "--page" && args[i] != "--relaunch" && args[i] != "--dpi-test") normal = false;
+                rest.Add(args[i]);
+            }
+            if (!never && (normal || force))
+            {
+                try { Aware = SetProcessDPIAware(); } catch (Exception) { Aware = false; }
+                if (Aware)
+                {
+                    try
+                    {
+                        IntPtr dc = GetDC(IntPtr.Zero);
+                        int dpi = GetDeviceCaps(dc, 88);       // LOGPIXELSX
+                        ReleaseDC(IntPtr.Zero, dc);
+                        if (dpi >= 96 && dpi <= 480) Scale = dpi / 96f;
+                    }
+                    catch (Exception) { }
+                }
+            }
+            return rest.ToArray();
+        }
+
+        // for the tests: pretend the screen scaling is this (only the layout; the letters keep the real size)
+        public static void Force(float scale) { Aware = scale > 1.001f; Scale = scale; }
+
+        // logical -> screen pixels
+        public static int S(int v) { return Aware ? (int)Math.Round(v * Scale) : v; }
+        public static float F(float v) { return Aware ? v * Scale : v; }
+        public static Rectangle S(Rectangle r) { return Aware ? new Rectangle(S(r.X), S(r.Y), S(r.Width), S(r.Height)) : r; }
+        // screen pixels -> logical
+        public static int L(int px) { return Aware ? (int)Math.Round(px / Scale) : px; }
+
+        // the width of a text in LOGICAL pixels. A size that is worked out before the window is scaled must be logical,
+        // and MeasureText answers in real pixels (the letters are already at the real size).
+        public static int TextW(string text, Font font) { return L(TextRenderer.MeasureText(text, font).Width); }
+
+        // the work area of the main screen in logical pixels (so "fits on the screen" is worked out in the same unit as the layout)
+        public static Rectangle LogicalWorkArea()
+        {
+            Rectangle w = Screen.PrimaryScreen.WorkingArea;
+            return Aware ? new Rectangle(L(w.X), L(w.Y), L(w.Width), L(w.Height)) : w;
+        }
+    }
+
+    // ---------------------------------------------------------------- for --dpi-test: what screen scaling can break in a window
+    // Parts that stick out of their block, parts on top of each other, text that does not fit, blocks that overlap, grids with the wrong heights.
+    static class DpiCheck
+    {
+        static string NameOf(Control c)
+        {
+            string t = c.Text;
+            if (t != null && t.Length > 30) t = t.Substring(0, 30) + "...";
+            return c.GetType().Name + (string.IsNullOrEmpty(t) ? "" : " \"" + t.Replace("\r", " ").Replace("\n", " ") + "\"");
+        }
+
+        // null when the text of this control fits in it
+        static string Fit(Control c)
+        {
+            Label l = c as Label;
+            if (l != null && !l.AutoSize && !string.IsNullOrEmpty(l.Text))
+            {
+                int need = TextRenderer.MeasureText(l.Text.TrimEnd('\r', '\n', ' '), l.Font, new Size(l.Width, 0), TextFormatFlags.WordBreak | TextFormatFlags.NoPadding).Height;
+                if (need > l.Height + 3) return NameOf(l) + " needs " + need + " px of height but is " + l.Height + " px high";
+            }
+            IconButton b = c as IconButton;
+            if (b != null && !string.IsNullOrEmpty(b.Text))
+            {
+                int w = TextRenderer.MeasureText(b.Text, b.Font, new Size(int.MaxValue, int.MaxValue), TextFormatFlags.NoPadding).Width + (b.Glyph.Length > 0 ? Dpi.S(22) + Dpi.S(8) : 0) + Dpi.S(8) + Dpi.S(6);
+                if (w > b.Width + 1) return NameOf(b) + " needs " + w + " px of width but is " + b.Width + " px wide";
+            }
+            return null;
+        }
+
+        // the controls of one block: all inside it, not on top of each other, their text fits
+        public static void Container(Control box, string where, Action<bool, string> ck)
+        {
+            List<Control> kids = new List<Control>();
+            foreach (Control c in box.Controls) if (c.Visible && c.Width > 0 && c.Height > 0) kids.Add(c);
+            List<string> bad = new List<string>();
+            int tol = 2;
+            foreach (Control c in kids)
+            {
+                bool inside = c.Left >= -tol && c.Top >= -tol && c.Right <= box.ClientSize.Width + tol && c.Bottom <= box.ClientSize.Height + tol;
+                if (!inside) bad.Add(NameOf(c) + " sticks out of " + NameOf(box) + " (" + c.Bounds + " in " + box.ClientSize + ")");
+                string fit = Fit(c);
+                if (fit != null) bad.Add(fit);
+            }
+            for (int i = 0; i < kids.Count; i++)
+                for (int j = i + 1; j < kids.Count; j++)
+                {
+                    Rectangle x = Rectangle.Intersect(kids[i].Bounds, kids[j].Bounds);
+                    if (!x.IsEmpty && x.Width > 3 && x.Height > 3) bad.Add(NameOf(kids[i]) + " is on top of " + NameOf(kids[j]) + " " + x);
+                }
+            ck(bad.Count == 0, where + ": " + kids.Count + " controls in " + NameOf(box) + " are inside, apart, and their text fits" + (bad.Count == 0 ? "" : "   PROBLEMS: " + string.Join(" | ", bad.ToArray())));
+        }
+
+        static void Grid(DataGridView g, string where, Action<bool, string> ck)
+        {
+            int rows = 0, wrong = 0;
+            foreach (DataGridViewRow r in g.Rows) { rows++; if (Math.Abs(r.Height - Dpi.S(24)) > 1) wrong++; }
+            ck(Math.Abs(g.ColumnHeadersHeight - Dpi.S(26)) <= 1 && Math.Abs(g.RowTemplate.Height - Dpi.S(24)) <= 1 && wrong == 0,
+               where + ": grid header " + g.ColumnHeadersHeight + " px (expected " + Dpi.S(26) + "), row " + g.RowTemplate.Height + " px (expected " + Dpi.S(24) + "), " + wrong + " of " + rows + " rows with another height");
+        }
+
+        static void Walk(Control c, string where, Action<bool, string> ck)
+        {
+            if (c is Card || c is TableLayoutPanel) Container(c, where, ck);
+            DataGridView g = c as DataGridView;
+            if (g != null) Grid(g, where, ck);
+            foreach (Control k in c.Controls) if (k.Visible) Walk(k, where, ck);
+        }
+
+        // one tab: its blocks one under the other without overlap, then what is inside each block
+        public static void Tree(Control page, string where, Action<bool, string> ck)
+        {
+            List<Control> blocks = new List<Control>();
+            foreach (Control c in page.Controls) if (c.Visible && (c is Card || c is TableLayoutPanel)) blocks.Add(c);
+            blocks.Sort(delegate(Control a, Control b) { return a.Top.CompareTo(b.Top); });
+            for (int i = 0; i + 1 < blocks.Count; i++)
+                ck(blocks[i + 1].Top >= blocks[i].Bottom - 1, where + ": block " + (i + 2) + " starts at " + blocks[i + 1].Top + " px and the block above ends at " + blocks[i].Bottom + " px");
+            Walk(page, where, ck);
+        }
+
+        // a small window: it fits the screen, it was scaled, everything in it is inside and apart
+        public static void Dialog(ChromeForm f, string name, Action<bool, string> ck)
+        {
+            Rectangle wa = Screen.FromControl(f).WorkingArea;
+            ck(f.Width <= wa.Width && f.Height <= wa.Height, name + ": " + f.Width + "x" + f.Height + " fits the work area " + wa.Width + "x" + wa.Height);
+            ck(!(Dpi.Aware && Dpi.Scale > 1.001f) || f.IsDpiScaled, name + ": was scaled by " + Dpi.Scale);
+            ck(f.TitleBar.Height == Dpi.S(40) || Math.Abs(f.TitleBar.Height - Dpi.S(40)) <= 1, name + ": title bar " + f.TitleBar.Height + " px (expected " + Dpi.S(40) + ")");
+            Container(f.Body, name, ck);
+            foreach (Control c in f.Body.Controls) if (c.Visible) Walk(c, name, ck);
+        }
+    }
+
     static class Info
     {
         // The order of the tabs, the tiles of the start window and the bullets of the welcome window, left to right: FiveM cache, Frame cap, DNS tools, Graphics.
@@ -252,7 +411,7 @@ namespace FiveMFrameCap
             return drawnIcon;
         }
 
-        public const string Version = "0.7.0";
+        public const string Version = "0.8.0";
         public const string AppName = "FiveM Toolbox";
         public const string ExeName = "FiveMToolbox";
         public const string Folder = "FiveMToolbox";
@@ -2440,7 +2599,7 @@ namespace FiveMFrameCap
         static void Grid(DataGridView g)
         {
             g.BackgroundColor = Bg2; g.GridColor = Border; g.BorderStyle = BorderStyle.None;
-            g.ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.None; g.ColumnHeadersDefaultCellStyle.Padding = new Padding(7, 0, 0, 0); g.DefaultCellStyle.Padding = new Padding(8, 0, 0, 0);
+            g.ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.None; g.ColumnHeadersDefaultCellStyle.Padding = new Padding(Dpi.S(7), 0, 0, 0); g.DefaultCellStyle.Padding = new Padding(Dpi.S(8), 0, 0, 0);
             g.ColumnHeadersDefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleLeft; g.DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleLeft;
             g.EnableHeadersVisualStyles = false;
             g.ColumnHeadersDefaultCellStyle.BackColor = Bg3; g.ColumnHeadersDefaultCellStyle.ForeColor = Text;
@@ -2526,7 +2685,7 @@ namespace FiveMFrameCap
         {
             float s = Math.Min(r.Width, r.Height) * 0.80f;
             float cx = r.X + r.Width / 2f, cy = r.Y + r.Height / 2f + s * 0.10f, rad = s / 2f;
-            using (Pen p = new Pen(c, Math.Max(1.6f, s * 0.14f)))
+            using (Pen p = new Pen(c, Math.Max(Dpi.F(1.6f), s * 0.14f)))
             {
                 p.StartCap = LineCap.Round; p.EndCap = LineCap.Round;
                 g.DrawArc(p, cx - rad, cy - rad, rad * 2f, rad * 2f, 150f, 240f);
@@ -2556,7 +2715,7 @@ namespace FiveMFrameCap
             }
             g.Clear(Parent != null ? Parent.BackColor : Theme.Bg1);
             Rectangle r = new Rectangle(0, 0, Width - 1, Height - 1);
-            using (GraphicsPath path = Rounded(r, 8))
+            using (GraphicsPath path = Rounded(r, Dpi.S(8)))
             {
                 using (Brush b = new SolidBrush(back)) g.FillPath(b, path);
                 using (Pen pen = new Pen(border)) g.DrawPath(pen, path);
@@ -2566,9 +2725,9 @@ namespace FiveMFrameCap
             Size ts = Size.Empty;
             if (!string.IsNullOrEmpty(Text)) ts = TextRenderer.MeasureText(g, Text, Font, new Size(int.MaxValue, int.MaxValue), TextFormatFlags.NoPadding);
             bool hasIcon = Glyph.Length > 0 && (Glyph == "gauge" || IconFont != null);
-            int iconW = hasIcon ? 22 : 0;
-            int gap = (hasIcon && ts.Width > 0) ? 8 : 0;
-            int x = Math.Max(8, (Width - (iconW + gap + ts.Width)) / 2);
+            int iconW = hasIcon ? Dpi.S(22) : 0;
+            int gap = (hasIcon && ts.Width > 0) ? Dpi.S(8) : 0;
+            int x = Math.Max(Dpi.S(8), (Width - (iconW + gap + ts.Width)) / 2);
             if (hasIcon)
             {
                 Rectangle ir = new Rectangle(x, 0, iconW, Height);
@@ -2577,11 +2736,11 @@ namespace FiveMFrameCap
             }
             if (ts.Width > 0)
             {
-                Rectangle tr = new Rectangle(x + iconW + gap, 0, Math.Max(1, Width - (x + iconW + gap) - 6), Height);
+                Rectangle tr = new Rectangle(x + iconW + gap, 0, Math.Max(1, Width - (x + iconW + gap) - Dpi.S(6)), Height);
                 TextRenderer.DrawText(g, Text, Font, tr, fore, TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
             }
             if (Focused && ShowFocusCues)
-                using (Pen pen = new Pen(fore)) { pen.DashStyle = DashStyle.Dot; g.DrawRectangle(pen, 3, 3, Width - 7, Height - 7); }
+                using (Pen pen = new Pen(fore)) { pen.DashStyle = DashStyle.Dot; g.DrawRectangle(pen, Dpi.S(3), Dpi.S(3), Width - Dpi.S(7), Height - Dpi.S(7)); }
         }
     }
 
@@ -3499,6 +3658,7 @@ namespace FiveMFrameCap
         public static readonly string ChevUp = C(0xE70E);
         public static readonly string Shield = C(0xE83D);
         public static readonly string Palette = C(0xE790);
+        public static readonly string Link = C(0xE71B);
         public static readonly string Report = C(0xE9D9);
         public static readonly string Bullet = C(0x2022);
         public static readonly string Copyright = C(0xA9);
@@ -3544,7 +3704,7 @@ namespace FiveMFrameCap
         {
             float s = Math.Min(r.Width, r.Height) * 0.80f;
             float cx = r.X + r.Width / 2f, cy = r.Y + r.Height / 2f + s * 0.10f, rad = s / 2f;
-            using (Pen p = new Pen(c, Math.Max(1.6f, s * 0.14f)))
+            using (Pen p = new Pen(c, Math.Max(Dpi.F(1.6f), s * 0.14f)))
             {
                 p.StartCap = LineCap.Round; p.EndCap = LineCap.Round;
                 g.DrawArc(p, cx - rad, cy - rad, rad * 2f, rad * 2f, 150f, 240f);
@@ -3569,7 +3729,7 @@ namespace FiveMFrameCap
             SmoothingMode old = g.SmoothingMode;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             float s = Math.Min(r.Width, r.Height) * 0.62f, cx = r.X + r.Width / 2f, cy = r.Y + r.Height / 2f;
-            using (Pen pen = new Pen(c, Math.Max(1.5f, s * 0.11f)))
+            using (Pen pen = new Pen(c, Math.Max(Dpi.F(1.5f), s * 0.11f)))
             using (Brush br = new SolidBrush(c))
             {
                 pen.LineJoin = LineJoin.Round; pen.StartCap = LineCap.Round; pen.EndCap = LineCap.Round;
@@ -3705,6 +3865,8 @@ namespace FiveMFrameCap
     class ActivityCard : Control
     {
         const int H = 66, Gap = 6;
+        static int HP { get { return Dpi.S(H); } }      // the same in screen pixels
+        static int GapP { get { return Dpi.S(Gap); } }
         string state = "idle", title = "", detail = "";
         float target = -1f, frac = 0f, sweep = 0f, doneT = 0f;
         DateTime started = DateTime.UtcNow;
@@ -3730,7 +3892,7 @@ namespace FiveMFrameCap
         // The card is docked at the top of the log area. Its height follows the slide, so the log is pushed down while it shows.
         public void Place()
         {
-            int h = (int)Math.Round((H + Gap) * slide.Value);
+            int h = (int)Math.Round((HP + GapP) * slide.Value);
             Height = h;
             if (h > 0 && !Visible) Visible = true;
             if (h <= 0 && slide.Target <= 0f) { Visible = false; clock.Stop(); state = "idle"; }
@@ -3781,7 +3943,7 @@ namespace FiveMFrameCap
 
         protected override void OnMouseMove(MouseEventArgs e)
         {
-            bool over = state != "run" && e.X > Width - 44;
+            bool over = state != "run" && e.X > Width - Dpi.S(44);
             if (over != closeHover) { closeHover = over; Invalidate(); }
             Cursor = state != "run" ? Cursors.Hand : Cursors.Default;
             base.OnMouseMove(e);
@@ -3841,35 +4003,42 @@ namespace FiveMFrameCap
             Graphics g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.Clear(Parent != null ? Parent.BackColor : Theme.Bg1);
-            g.TranslateTransform(0, Height - H - Gap);
+            g.TranslateTransform(0, Height - HP - GapP);
             Color sc = StateColor();
-            Rectangle r = new Rectangle(0, 0, Width - 1, H - 1);
-            using (GraphicsPath p = Gfx.Rounded(r, 16))
+            Rectangle r = new Rectangle(0, 0, Width - 1, HP - 1);
+            using (GraphicsPath p = Gfx.Rounded(r, Dpi.S(16)))
             {
                 using (Brush b = new SolidBrush(Theme.Bg3)) g.FillPath(b, p);
-                using (Pen pen = new Pen(Fx.Mix(Theme.Border, sc, 0.75f), 1.6f)) g.DrawPath(pen, p);
+                using (Pen pen = new Pen(Fx.Mix(Theme.Border, sc, 0.75f), Dpi.F(1.6f))) g.DrawPath(pen, p);
             }
             float cx = 34f, cy = 31f;
-            if (state == "run") DrawSpinner(g, cx, cy, sc); else DrawResult(g, cx, cy, sc);
+            {
+                // the spinner and the tick are shapes drawn in logical sizes: scale the drawing
+                GraphicsState gs0 = g.Save();
+                float k0 = Dpi.Aware ? Dpi.Scale : 1f;
+                g.ScaleTransform(k0, k0);
+                if (state == "run") DrawSpinner(g, cx, cy, sc); else DrawResult(g, cx, cy, sc);
+                g.Restore(gs0);
+            }
 
-            int tx = 64;
-            int rightPad = state == "run" ? 74 : 46;
+            int tx = Dpi.S(64);
+            int rightPad = state == "run" ? Dpi.S(74) : Dpi.S(46);
             using (Font f = new Font("Segoe UI", 10.5f, FontStyle.Bold))
-                TextRenderer.DrawText(g, title, f, new Rectangle(tx, 7, Math.Max(10, Width - tx - rightPad), 20), Theme.Text, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
+                TextRenderer.DrawText(g, title, f, new Rectangle(tx, Dpi.S(7), Math.Max(Dpi.S(10), Width - tx - rightPad), Dpi.S(20)), Theme.Text, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
             using (Font f2 = new Font("Segoe UI", 9f))
             {
-                TextRenderer.DrawText(g, detail, f2, new Rectangle(tx, 27, Math.Max(10, Width - tx - 22), 28), Theme.Text2, TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.NoPadding | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis);
+                TextRenderer.DrawText(g, detail, f2, new Rectangle(tx, Dpi.S(27), Math.Max(Dpi.S(10), Width - tx - Dpi.S(22)), Dpi.S(28)), Theme.Text2, TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.NoPadding | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis);
                 if (state == "run")
                 {
                     int secs = (int)(DateTime.UtcNow - started).TotalSeconds;
-                    if (secs >= 2) TextRenderer.DrawText(g, secs + " s", f2, new Rectangle(Width - 70, 7, 54, 20), Theme.Text2, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                    if (secs >= 2) TextRenderer.DrawText(g, secs + " s", f2, new Rectangle(Width - Dpi.S(70), Dpi.S(7), Dpi.S(54), Dpi.S(20)), Theme.Text2, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
                 }
             }
-            if (state != "run") Gfx.Glyph(g, Ico.Cancel, new Rectangle(Width - 38, 5, 24, 24), closeHover ? Theme.Text : Theme.Text2, 9f);
+            if (state != "run") Gfx.Glyph(g, Ico.Cancel, new Rectangle(Width - Dpi.S(38), Dpi.S(5), Dpi.S(24), Dpi.S(24)), closeHover ? Theme.Text : Theme.Text2, 9f);
 
             // the bar: it fills as the job moves on, or sweeps back and forth when the length is not known
-            Rectangle track = new Rectangle(tx, H - 11, Width - tx - 20, 4);
-            using (GraphicsPath tp = Gfx.Rounded(track, 4))
+            Rectangle track = new Rectangle(tx, HP - Dpi.S(11), Width - tx - Dpi.S(20), Dpi.S(4));
+            using (GraphicsPath tp = Gfx.Rounded(track, Dpi.S(4)))
             {
                 using (Brush tb = new SolidBrush(Theme.Border)) g.FillPath(tb, tp);
                 g.SetClip(tp);
@@ -3889,7 +4058,7 @@ namespace FiveMFrameCap
                         if (state == "run")
                         {
                             g.IntersectClip(new RectangleF(track.X, track.Y - 1, fw, track.Height + 2));
-                            float shW = 70f, sx = track.X - shW + (fw + shW) * pos;
+                            float shW = Dpi.F(70f), sx = track.X - shW + (fw + shW) * pos;
                             using (Brush hb = new SolidBrush(Color.FromArgb(120, 255, 255, 255))) g.FillRectangle(hb, sx, track.Y, shW, track.Height);
                         }
                     }
@@ -3918,7 +4087,7 @@ namespace FiveMFrameCap
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.Clear(Parent != null ? Parent.BackColor : Theme.Bg1);
             Rectangle r = new Rectangle(0, 0, Width - 1, Height - 1);
-            using (GraphicsPath p = Gfx.Rounded(r, 14))
+            using (GraphicsPath p = Gfx.Rounded(r, Dpi.S(14)))
             using (Brush b = new SolidBrush(Theme.Bg2))
                 g.FillPath(b, p);
         }
@@ -3928,14 +4097,14 @@ namespace FiveMFrameCap
             Graphics g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             Rectangle r = new Rectangle(0, 0, Width - 1, Height - 1);
-            using (GraphicsPath p = Gfx.Rounded(r, 14))
-            using (Pen pen = new Pen(Warn ? Theme.Bad : Theme.Border, Warn ? 1.6f : 1f))
+            using (GraphicsPath p = Gfx.Rounded(r, Dpi.S(14)))
+            using (Pen pen = new Pen(Warn ? Theme.Bad : Theme.Border, Warn ? Dpi.F(1.6f) : 1f))
                 g.DrawPath(pen, p);
-            int x = 16;
-            if (Glyph.Length > 0) { Gfx.Glyph(g, Glyph, new Rectangle(x - 2, 10, 26, 26), GlyphColor.IsEmpty ? (Warn ? Theme.Bad : Theme.AccentText) : GlyphColor, 13f); x += 28; }
+            int x = Dpi.S(16);
+            if (Glyph.Length > 0) { Gfx.Glyph(g, Glyph, new Rectangle(x - Dpi.S(2), Dpi.S(10), Dpi.S(26), Dpi.S(26)), GlyphColor.IsEmpty ? (Warn ? Theme.Bad : Theme.AccentText) : GlyphColor, 13f); x += Dpi.S(28); }
             if (Title.Length > 0)
                 using (Font f = new Font("Segoe UI", 10.5f, FontStyle.Bold))
-                    TextRenderer.DrawText(g, Title, f, new Rectangle(x, 10, Math.Max(10, Width - x - 12), 26), Theme.Text, TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
+                    TextRenderer.DrawText(g, Title, f, new Rectangle(x, Dpi.S(10), Math.Max(Dpi.S(10), Width - x - Dpi.S(12)), Dpi.S(26)), Theme.Text, TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
         }
     }
 
@@ -3963,7 +4132,7 @@ namespace FiveMFrameCap
         {
             Glyph = glyph; Text = Loc.T(text); Height = 38; Cursor = Cursors.Hand; Font = new Font("Segoe UI", 10f);
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.StandardClick, true);
-            Width = TextRenderer.MeasureText(Text, Font).Width + 62;
+            Width = Dpi.TextW(Text, Font) + 62;
             ac = new Fader(this); hv = new Fader(this);
         }
         protected override void OnMouseEnter(EventArgs e) { hv.To(1f); base.OnMouseEnter(e); }
@@ -3979,17 +4148,17 @@ namespace FiveMFrameCap
             Rectangle r = new Rectangle(0, 0, Width - 1, Height);
             if (a > 0.01f)
             {
-                using (GraphicsPath p = Gfx.RoundedTop(r, 14)) using (Brush b = new SolidBrush(Fx.Mix(bg, Theme.Bg1, a))) g.FillPath(b, p);
-                int bw = (int)((Width - 29) * a);
-                using (Brush ab = new SolidBrush(Theme.Primary)) g.FillRectangle(ab, (Width - bw) / 2, 0, bw, 3);
+                using (GraphicsPath p = Gfx.RoundedTop(r, Dpi.S(14))) using (Brush b = new SolidBrush(Fx.Mix(bg, Theme.Bg1, a))) g.FillPath(b, p);
+                int bw = (int)((Width - Dpi.S(29)) * a);
+                using (Brush ab = new SolidBrush(Theme.Primary)) g.FillRectangle(ab, (Width - bw) / 2, 0, bw, Dpi.S(3));
             }
             if (h > 0.01f)
             {
-                Rectangle hr = new Rectangle(4, 4, Width - 9, Height - 8);
-                using (GraphicsPath p2 = Gfx.Rounded(hr, 10)) using (Brush b2 = new SolidBrush(Fx.Mix(bg, Theme.Bg3, h))) g.FillPath(b2, p2);
+                Rectangle hr = new Rectangle(Dpi.S(4), Dpi.S(4), Width - Dpi.S(9), Height - Dpi.S(8));
+                using (GraphicsPath p2 = Gfx.Rounded(hr, Dpi.S(10))) using (Brush b2 = new SolidBrush(Fx.Mix(bg, Theme.Bg3, h))) g.FillPath(b2, p2);
             }
-            Gfx.Glyph(g, Glyph, new Rectangle(14, 0, 24, Height), Fx.Mix(Theme.Text2, Theme.AccentText, a), 12f);
-            TextRenderer.DrawText(g, Text, Font, new Rectangle(44, 0, Width - 48, Height), Fx.Mix(Theme.Text2, Theme.Text, a), TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoPadding);
+            Gfx.Glyph(g, Glyph, new Rectangle(Dpi.S(14), 0, Dpi.S(24), Height), Fx.Mix(Theme.Text2, Theme.AccentText, a), 12f);
+            TextRenderer.DrawText(g, Text, Font, new Rectangle(Dpi.S(44), 0, Width - Dpi.S(48), Height), Fx.Mix(Theme.Text2, Theme.Text, a), TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoPadding);
         }
     }
 
@@ -4030,7 +4199,7 @@ namespace FiveMFrameCap
             float s = sel.Value, h = hv.Value;
             Rectangle r = new Rectangle(1, 1, Width - 3, Height - 3);
             if (s > 0.01f || h > 0.01f)
-                using (GraphicsPath p = Gfx.Rounded(r, 10)) using (Brush b = new SolidBrush(Fx.Mix(Fx.Mix(bg, Theme.Bg4, h), Theme.Primary, s))) g.FillPath(b, p);
+                using (GraphicsPath p = Gfx.Rounded(r, Dpi.S(10))) using (Brush b = new SolidBrush(Fx.Mix(Fx.Mix(bg, Theme.Bg4, h), Theme.Primary, s))) g.FillPath(b, p);
             Gfx.Glyph(g, Glyph, new Rectangle(0, 0, Width, Height), Fx.Mix(Theme.Text2, Color.White, s), 11f);
         }
     }
@@ -4059,20 +4228,21 @@ namespace FiveMFrameCap
             g.Clear(Fx.Mix(bg, isClose ? Color.FromArgb(196, 43, 28) : Theme.Bg4, h));
             Color c = isClose ? Fx.Mix(Theme.Text, Color.White, h) : Theme.Text;
             int cx = Width / 2, cy = Height / 2;
+            int d5 = Dpi.S(5), d2 = Dpi.S(2), d3 = Dpi.S(3), d8 = Dpi.S(8), d10 = Dpi.S(10);
             using (Pen p = new Pen(c, 1f))
             {
-                if (Kind == "min") g.DrawLine(p, cx - 5, cy, cx + 5, cy);
-                else if (Kind == "max") g.DrawRectangle(p, cx - 5, cy - 5, 10, 10);
+                if (Kind == "min") g.DrawLine(p, cx - d5, cy, cx + d5, cy);
+                else if (Kind == "max") g.DrawRectangle(p, cx - d5, cy - d5, d10, d10);
                 else if (Kind == "restore")
                 {
-                    g.DrawRectangle(p, cx - 5, cy - 2, 8, 8);
-                    g.DrawLine(p, cx - 2, cy - 5, cx + 5, cy - 5);
-                    g.DrawLine(p, cx + 5, cy - 5, cx + 5, cy + 3);
+                    g.DrawRectangle(p, cx - d5, cy - d2, d8, d8);
+                    g.DrawLine(p, cx - d2, cy - d5, cx + d5, cy - d5);
+                    g.DrawLine(p, cx + d5, cy - d5, cx + d5, cy + d3);
                 }
                 else
                 {
-                    g.DrawLine(p, cx - 5, cy - 5, cx + 5, cy + 5);
-                    g.DrawLine(p, cx + 5, cy - 5, cx - 5, cy + 5);
+                    g.DrawLine(p, cx - d5, cy - d5, cx + d5, cy + d5);
+                    g.DrawLine(p, cx + d5, cy - d5, cx - d5, cy + d5);
                 }
             }
         }
@@ -4101,7 +4271,7 @@ namespace FiveMFrameCap
         {
             Text = Loc.T(text); Height = 26; Cursor = Cursors.Hand; Font = new Font("Segoe UI", 9f);
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.StandardClick, true);
-            Width = TextRenderer.MeasureText(Text, Font).Width + 22;
+            Width = Dpi.TextW(Text, Font) + 22;
             sel = new Fader(this); hv = new Fader(this);
         }
         protected override void OnMouseEnter(EventArgs e) { hv.To(1f); base.OnMouseEnter(e); }
@@ -4146,16 +4316,16 @@ namespace FiveMFrameCap
             g.Clear(Parent != null ? Parent.BackColor : Theme.Bg1);
             float h = hv.Value;
             Rectangle r = new Rectangle(0, 0, Width - 1, Height - 1);
-            using (GraphicsPath p = Gfx.Rounded(r, 14))
+            using (GraphicsPath p = Gfx.Rounded(r, Dpi.S(14)))
             {
                 using (Brush b = new SolidBrush(Fx.Mix(Theme.Bg2, Theme.Bg4, h))) g.FillPath(b, p);
                 using (Pen pen = new Pen(Fx.Mix(Theme.Border, Theme.Primary, h), 1f + 0.6f * h)) g.DrawPath(pen, p);
             }
-            Gfx.Glyph(g, Glyph, new Rectangle(14 + (int)(4 * h), 0, 44, Height), Theme.AccentText, 20f);
+            Gfx.Glyph(g, Glyph, new Rectangle(Dpi.S(14) + (int)(Dpi.F(4) * h), 0, Dpi.S(44), Height), Theme.AccentText, 20f);
             using (Font f = new Font("Segoe UI", 11.5f, FontStyle.Bold))
-                TextRenderer.DrawText(g, Title, f, new Rectangle(70 + (int)(2 * h), 12, Width - 84, 28), Theme.Text, TextFormatFlags.Left | TextFormatFlags.NoPadding);
+                TextRenderer.DrawText(g, Title, f, new Rectangle(Dpi.S(70) + (int)(Dpi.F(2) * h), Dpi.S(12), Width - Dpi.S(84), Dpi.S(28)), Theme.Text, TextFormatFlags.Left | TextFormatFlags.NoPadding);
             using (Font f2 = new Font("Segoe UI", 9.5f))
-                TextRenderer.DrawText(g, Desc, f2, new Rectangle(70 + (int)(2 * h), 42, Width - 84, 28), Theme.Text2, TextFormatFlags.Left | TextFormatFlags.NoPadding);
+                TextRenderer.DrawText(g, Desc, f2, new Rectangle(Dpi.S(70) + (int)(Dpi.F(2) * h), Dpi.S(42), Width - Dpi.S(84), Dpi.S(28)), Theme.Text2, TextFormatFlags.Left | TextFormatFlags.NoPadding);
         }
     }
 
@@ -4206,7 +4376,7 @@ namespace FiveMFrameCap
             m.MinimumSize = new Size(Width, 0);
             m.Closed += delegate { open = false; Invalidate(); };
             open = true; Invalidate();
-            m.Show(this, new Point(0, Height + 2));
+            m.Show(this, new Point(0, Height + Dpi.S(2)));
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -4216,14 +4386,14 @@ namespace FiveMFrameCap
             g.Clear(Parent != null ? Parent.BackColor : Theme.Bg2);
             Rectangle r = new Rectangle(0, 0, Width - 1, Height - 1);
             Color border = Fx.Mix(Theme.Border, Theme.Primary, open ? 1f : hv.Value * 0.8f);
-            using (GraphicsPath p = Gfx.Rounded(r, 8))
+            using (GraphicsPath p = Gfx.Rounded(r, Dpi.S(8)))
             {
                 using (Brush b = new SolidBrush(Enabled ? Theme.Bg3 : Theme.Bg2)) g.FillPath(b, p);
                 using (Pen pen = new Pen(border)) g.DrawPath(pen, p);
             }
             string s = SelectedItem ?? "";
-            TextRenderer.DrawText(g, s, Font, new Rectangle(10, 0, Width - 44, Height), Enabled ? Theme.Text : Theme.Text2, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
-            Gfx.Glyph(g, Ico.Chevron, new Rectangle(Width - 32, 0, 24, Height), Theme.Text2, 9f);
+            TextRenderer.DrawText(g, s, Font, new Rectangle(Dpi.S(10), 0, Width - Dpi.S(44), Height), Enabled ? Theme.Text : Theme.Text2, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
+            Gfx.Glyph(g, Ico.Chevron, new Rectangle(Width - Dpi.S(32), 0, Dpi.S(24), Height), Theme.Text2, 9f);
         }
     }
 
@@ -4286,13 +4456,13 @@ namespace FiveMFrameCap
 
         void Bump(int d) { Commit(); Value = val + d; tb.SelectAll(); }
 
-        bool InArrows(Point p) { return p.X >= Width - 28; }
+        bool InArrows(Point p) { return p.X >= Width - Dpi.S(28); }
 
         protected override void OnLayout(LayoutEventArgs e)
         {
             base.OnLayout(e);
             tb.Font = Font;
-            tb.Left = 12; tb.Width = Math.Max(10, Width - 44);
+            tb.Left = Dpi.S(12); tb.Width = Math.Max(Dpi.S(10), Width - Dpi.S(44));
             tb.Top = Math.Max(0, (Height - tb.Height) / 2);
         }
 
@@ -4337,23 +4507,24 @@ namespace FiveMFrameCap
             g.Clear(Parent != null ? Parent.BackColor : Theme.Bg2);
             Color border = Fx.Mix(Fx.Mix(Theme.Border, Theme.Primary, hv.Value * 0.5f), Theme.Primary, fo.Value);
             Rectangle r = new Rectangle(0, 0, Width - 1, Height - 1);
-            using (GraphicsPath p = Gfx.Rounded(r, 8))
+            using (GraphicsPath p = Gfx.Rounded(r, Dpi.S(8)))
             {
                 using (Brush b = new SolidBrush(fill)) g.FillPath(b, p);
                 if (Enabled && hot != 0)
                 {
                     g.SetClip(p);
-                    Rectangle half = hot == 1 ? new Rectangle(Width - 28, 0, 28, Height / 2) : new Rectangle(Width - 28, Height / 2, 28, Height - Height / 2);
+                    int a28 = Dpi.S(28);
+                    Rectangle half = hot == 1 ? new Rectangle(Width - a28, 0, a28, Height / 2) : new Rectangle(Width - a28, Height / 2, a28, Height - Height / 2);
                     using (Brush hb = new SolidBrush(Theme.Bg4)) g.FillRectangle(hb, half);
                     g.ResetClip();
                 }
                 using (Pen pen = new Pen(border)) g.DrawPath(pen, p);
             }
-            using (Pen sep = new Pen(Theme.Border)) g.DrawLine(sep, Width - 29, 5, Width - 29, Height - 6);
+            using (Pen sep = new Pen(Theme.Border)) g.DrawLine(sep, Width - Dpi.S(29), Dpi.S(5), Width - Dpi.S(29), Height - Dpi.S(6));
             Color arrowUp = Enabled ? (hot == 1 ? Theme.Text : Theme.Text2) : Theme.Border;
             Color arrowDown = Enabled ? (hot == 2 ? Theme.Text : Theme.Text2) : Theme.Border;
-            Gfx.Glyph(g, Ico.ChevUp, new Rectangle(Width - 28, 0, 27, Height / 2), arrowUp, 8f);
-            Gfx.Glyph(g, Ico.Chevron, new Rectangle(Width - 28, Height / 2, 27, Height - Height / 2), arrowDown, 8f);
+            Gfx.Glyph(g, Ico.ChevUp, new Rectangle(Width - Dpi.S(28), 0, Dpi.S(27), Height / 2), arrowUp, 8f);
+            Gfx.Glyph(g, Ico.Chevron, new Rectangle(Width - Dpi.S(28), Height / 2, Dpi.S(27), Height - Height / 2), arrowDown, 8f);
         }
     }
 
@@ -4400,15 +4571,15 @@ namespace FiveMFrameCap
             g.Clear(Parent != null ? Parent.BackColor : Theme.Bg1);
             Color off = Fx.Mix(Theme.Bg4, Theme.Border, 0.5f + 0.3f * hv.Value);
             Color track = Fx.Mix(off, Theme.Primary, f.Value);
-            Rectangle r = new Rectangle(0, 1, Width - 1, Height - 3);
+            Rectangle r = new Rectangle(0, Dpi.S(1), Width - 1, Height - Dpi.S(3));
             using (GraphicsPath p = Gfx.Rounded(r, r.Height))
             {
                 using (Brush b = new SolidBrush(Enabled ? track : Fx.Mix(track, Theme.Bg1, 0.5f))) g.FillPath(b, p);
-                if (Focused) using (Pen pen = new Pen(Theme.AccentText, 1.5f)) g.DrawPath(pen, p);
+                if (Focused) using (Pen pen = new Pen(Theme.AccentText, Dpi.F(1.5f))) g.DrawPath(pen, p);
             }
-            int kd = r.Height - 6;
-            float kx = 3f + (Width - 1 - kd - 6) * f.Value;
-            using (Brush kb = new SolidBrush(Fx.Mix(Theme.Text2, Color.White, f.Value))) g.FillEllipse(kb, kx, r.Y + 3, kd, kd);
+            int kd = r.Height - Dpi.S(6);
+            float kx = Dpi.F(3f) + (Width - 1 - kd - Dpi.S(6)) * f.Value;
+            using (Brush kb = new SolidBrush(Fx.Mix(Theme.Text2, Color.White, f.Value))) g.FillEllipse(kb, kx, r.Y + Dpi.S(3), kd, kd);
         }
     }
 
@@ -4452,7 +4623,7 @@ namespace FiveMFrameCap
         {
             ToolStripMenuItem it = new ToolStripMenuItem(text);
             it.Checked = check; it.ForeColor = Theme.Text; it.BackColor = Theme.Bg3;
-            it.Padding = new Padding(2, 5, 2, 5);
+            it.Padding = new Padding(Dpi.S(2), Dpi.S(5), Dpi.S(2), Dpi.S(5));
             return it;
         }
     }
@@ -4470,8 +4641,8 @@ namespace FiveMFrameCap
             Graphics g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.Clear(Parent != null ? Parent.BackColor : Theme.Bg1);
-            using (Brush b = new SolidBrush(Color.FromArgb(229, 72, 77))) g.FillEllipse(b, 2, 2, Width - 5, Height - 5);
-            using (Pen p = new Pen(Color.White, 3.2f))
+            using (Brush b = new SolidBrush(Color.FromArgb(229, 72, 77))) g.FillEllipse(b, Dpi.S(2), Dpi.S(2), Width - Dpi.S(5), Height - Dpi.S(5));
+            using (Pen p = new Pen(Color.White, Dpi.F(3.2f)))
             {
                 p.StartCap = LineCap.Round; p.EndCap = LineCap.Round;
                 float a = Width * 0.32f, z = Width * 0.68f;
@@ -4490,7 +4661,7 @@ namespace FiveMFrameCap
             text = Loc.T(text);
             label = new Label();
             label.AutoSize = false; label.Text = text; label.Left = left; label.Top = top; label.Width = width; label.Font = font; label.Tag = tag;
-            int h = TextRenderer.MeasureText(text, font, new Size(width, 0), TextFormatFlags.WordBreak | TextFormatFlags.NoPadding).Height;
+            int h = Dpi.L(TextRenderer.MeasureText(text, font, new Size(Dpi.S(width), 0), TextFormatFlags.WordBreak | TextFormatFlags.NoPadding).Height);
             label.Height = h + 4;
             parent.Controls.Add(label);
             return top + label.Height;
@@ -4529,6 +4700,10 @@ namespace FiveMFrameCap
         Point startCursor;
         Rectangle startBounds;
         const int Border = 6;
+        bool dpiScaled;
+        // a size in screen pixels once this window is scaled; before that the window is still in logical sizes (code that runs before and after the scaling uses this)
+        protected int S(int v) { return dpiScaled ? Dpi.S(v) : v; }
+        public bool IsDpiScaled { get { return dpiScaled; } }
 
         // allow minimising from the taskbar, and a drop shadow, on a window without a normal frame
         protected override CreateParams CreateParams
@@ -4563,7 +4738,7 @@ namespace FiveMFrameCap
             Draggable(TitleBar);
             Image img = null;
             Icon ic = Info.AppIcon();
-            if (ic != null) { try { img = new Bitmap(ic.ToBitmap(), 18, 18); } catch (Exception) { } }
+            if (ic != null) { try { img = new Bitmap(ic.ToBitmap(), Dpi.S(18), Dpi.S(18)); } catch (Exception) { } }
             if (img != null)
             {
                 iconBox = new PictureBox(); iconBox.Image = img; iconBox.SizeMode = PictureBoxSizeMode.CenterImage; iconBox.BackColor = Color.Transparent;
@@ -4611,7 +4786,7 @@ namespace FiveMFrameCap
         {
             base.OnResize(e);
             if (btnMax != null) { btnMax.Kind = WindowState == FormWindowState.Maximized ? "restore" : "max"; btnMax.Invalidate(); }
-            Padding = WindowState == FormWindowState.Maximized ? new Padding(0) : new Padding(Border, 0, Border, Border);
+            Padding = WindowState == FormWindowState.Maximized ? new Padding(0) : new Padding(S(Border), 0, S(Border), S(Border));
         }
 
         protected override void OnHandleCreated(EventArgs e)
@@ -4620,7 +4795,35 @@ namespace FiveMFrameCap
             try { int round = 2; DwmSetWindowAttribute(Handle, 33, ref round, 4); } catch (Exception) { }
         }
 
-        protected override void OnLoad(EventArgs e) { if (FadeIn) Opacity = 0; base.OnLoad(e); }
+        protected override void OnLoad(EventArgs e)
+        {
+            // the window and everything in it was built in logical sizes (100 percent): scale all of it once, now that it is complete
+            if (Dpi.Aware && Dpi.Scale > 1.001f && !dpiScaled)
+            {
+                dpiScaled = true;
+                Scale(new SizeF(Dpi.Scale, Dpi.Scale));
+                if (StartPosition == FormStartPosition.CenterScreen) CenterToScreen();
+                else if (StartPosition == FormStartPosition.CenterParent) CenterToParent();
+                FixGrids(this);
+            }
+            if (FadeIn) Opacity = 0;
+            base.OnLoad(e);
+        }
+
+        // a grid keeps its own header and row heights when the window is scaled: set the same logical sizes as MakeGrid uses, scaled
+        static void FixGrids(Control root)
+        {
+            foreach (Control c in root.Controls)
+            {
+                DataGridView g = c as DataGridView;
+                if (g != null)
+                {
+                    g.ColumnHeadersHeight = Dpi.S(26); g.RowTemplate.Height = Dpi.S(24);
+                    foreach (DataGridViewRow gr in g.Rows) gr.Height = Dpi.S(24);
+                }
+                FixGrids(c);
+            }
+        }
 
         protected override void OnShown(EventArgs e)
         {
@@ -4660,9 +4863,10 @@ namespace FiveMFrameCap
         {
             if (!canResize || WindowState != FormWindowState.Normal) return 0;
             int w = ClientSize.Width, h = ClientSize.Height;
-            bool l = p.X < Border, r = p.X >= w - Border, b = p.Y >= h - Border;
-            if (b && p.X < 18) return 4;
-            if (b && p.X >= w - 18) return 5;
+            int bd = S(Border), corner = S(18);
+            bool l = p.X < bd, r = p.X >= w - bd, b = p.Y >= h - bd;
+            if (b && p.X < corner) return 4;
+            if (b && p.X >= w - corner) return 5;
             if (l) return 1;
             if (r) return 2;
             if (b) return 3;
@@ -4881,7 +5085,7 @@ namespace FiveMFrameCap
         }
 
         static string ColorEntry(Color c) { return Cw("~red") + c.R + Cw("~green") + c.G + Cw("~blue") + c.B + ";"; }
-        int Tw(int chars) { return (int)Math.Round(chars * charPx * 15f); }
+        int Tw(int chars) { return (int)Math.Round(chars * charPx * (Dpi.Aware ? 15f / Dpi.Scale : 15f)); }   // charPx is in real pixels
 
         static Color ToolColor(string tool)
         {
@@ -5137,12 +5341,12 @@ namespace FiveMFrameCap
             y += 18;
             string sureText = Loc.T("I understand that I lose my key binds and my graphics settings");
             Font sf = new Font("Segoe UI", 10f, FontStyle.Bold);
-            int sh = TextRenderer.MeasureText(sureText, sf, new Size(bodyW - 52 - 26, 0), TextFormatFlags.WordBreak | TextFormatFlags.NoPadding).Height + 12;
+            int sh = Dpi.L(TextRenderer.MeasureText(sureText, sf, new Size(Dpi.S(bodyW - 52 - 26), 0), TextFormatFlags.WordBreak | TextFormatFlags.NoPadding).Height) + 12;
             sure = new CheckBox(); sure.Text = sureText; sure.Font = sf; sure.AutoSize = false;
             sure.Left = 26; sure.Top = y; sure.Width = bodyW - 52; sure.Height = sh; Body.Controls.Add(sure);
             y += sh + 14;
             Font bf = new Font("Segoe UI", 10f, FontStyle.Bold);
-            int gw = Math.Max(250, TextRenderer.MeasureText(Loc.T("Reset everything"), bf).Width + 80);
+            int gw = Math.Max(250, Dpi.TextW(Loc.T("Reset everything"), bf) + 80);
             go = new IconButton(); go.Glyph = Ico.Delete; go.Text = Loc.T("Reset everything"); go.Tag = "danger"; go.Left = 26; go.Top = y; go.Width = gw; go.Height = 46; go.Enabled = false;
             go.Font = bf; go.DialogResult = DialogResult.OK; Body.Controls.Add(go);
             IconButton cancel = new IconButton(); cancel.Glyph = Ico.Cancel; cancel.Text = Loc.T("Cancel"); cancel.Left = 26 + gw + 12; cancel.Top = y; cancel.Width = 170; cancel.Height = 46;
@@ -5227,7 +5431,7 @@ namespace FiveMFrameCap
         // FiveM cache page
         DropBox cacheRoots;
         Label cacheState, cacheTotal, sizeTemp, sizeLogs, sizeDeep, descTemp, descLogs, descDeep;
-        IconButton cacheRefresh, cacheClose, cacheClean, cacheStart, cacheWipe;
+        IconButton cacheRefresh, cacheClose, cacheClean, cacheStart, cacheWipe, cacheIcon;
         Card cReset; ToggleSwitch resetSwitch; Label resetOffLine, wipeBig, wipeDesc; int resetGen = 0;
         CheckBox cbTemp, cbLogs, cbDeep, cbPure;
         List<CacheItem> cacheItems = new List<CacheItem>();
@@ -5268,7 +5472,7 @@ namespace FiveMFrameCap
         static DataGridViewColumn CheckCol(int width)
         {
             DataGridViewCheckBoxColumn c = new DataGridViewCheckBoxColumn();
-            c.HeaderText = Loc.T("Use"); c.Width = Math.Max(width, TextRenderer.MeasureText(c.HeaderText, new Font("Segoe UI", 9.5f)).Width + 34); c.SortMode = DataGridViewColumnSortMode.NotSortable;
+            c.HeaderText = Loc.T("Use"); c.Width = Math.Max(width, Dpi.TextW(c.HeaderText, new Font("Segoe UI", 9.5f)) + 34); c.SortMode = DataGridViewColumnSortMode.NotSortable;
             c.HeaderCell.Style.Alignment = DataGridViewContentAlignment.MiddleCenter; c.HeaderCell.Style.Padding = new Padding(0);
             c.DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleCenter; c.DefaultCellStyle.Padding = new Padding(0);
             return c;
@@ -5285,7 +5489,7 @@ namespace FiveMFrameCap
             b.Glyph = glyph; b.Text = Loc.T(text); b.Left = left; b.Top = top; b.Width = width; b.Height = height;
             return b;
         }
-        static int FitW(string text, int min) { return Math.Max(min, TextRenderer.MeasureText(Loc.T(text), new Font("Segoe UI", 9.5f)).Width + 56); }
+        static int FitW(string text, int min) { return Math.Max(min, Dpi.TextW(Loc.T(text), new Font("Segoe UI", 9.5f)) + 56); }
         static Label Small(string text, int left, int top, int width, int height, string tag)
         {
             Label l = new Label(); l.Text = Loc.T(text); l.Left = left; l.Top = top; l.Width = width; l.Height = height; l.Tag = tag; l.Font = new Font("Segoe UI", 9f);
@@ -5297,7 +5501,7 @@ namespace FiveMFrameCap
             p.Resize += delegate
             {
                 foreach (Control c in p.Controls)
-                    if (c is Card || c is TableLayoutPanel) { c.Left = 16; c.Width = Math.Max(300, p.ClientSize.Width - 32); }
+                    if (c is Card || c is TableLayoutPanel) { c.Left = Dpi.S(16); c.Width = Math.Max(Dpi.S(300), p.ClientSize.Width - Dpi.S(32)); }
             };
             return p;
         }
@@ -5308,7 +5512,7 @@ namespace FiveMFrameCap
         {
             Text = Info.AppName + " " + Info.Version + (DnsTool.IsAdmin() ? " - " + Loc.T("administrator") : "") + Finder.TestModeText();
             Icon = Info.AppIcon();
-            Rectangle wa = Screen.PrimaryScreen.WorkingArea;
+            Rectangle wa = Dpi.LogicalWorkArea();
             Width = Math.Min(1000, wa.Width - 40); Height = Math.Min(985, wa.Height - 30);
             MinimumSize = new Size(960, 560);
             StartPosition = FormStartPosition.CenterScreen;
@@ -5399,13 +5603,13 @@ namespace FiveMFrameCap
         {
             int bottom = 0;
             foreach (Control c in page.Controls) bottom = Math.Max(bottom, c.Bottom);
-            return bottom + 12;
+            return bottom + S(12);
         }
 
         void LayoutFooter(bool animate)
         {
             Panel page = pageCap.Visible ? pageCap : pageDns.Visible ? pageDns : pageGfx.Visible ? pageGfx : pageCache;
-            int want = Math.Max(176, Body.ClientSize.Height - PageNeed(page));
+            int want = Math.Max(S(176), Body.ClientSize.Height - PageNeed(page));
             int gen = ++footerGen;
             if (!animate || !IsHandleCreated || footer.Height == want) { footer.Height = want; return; }
             int from = footer.Height;
@@ -5413,7 +5617,7 @@ namespace FiveMFrameCap
             {
                 if (gen != footerGen) return;
                 footer.Height = from + (int)Math.Round((want - from) * Fx.EaseOut(p));
-            }, delegate { if (gen == footerGen) footer.Height = Math.Max(176, Body.ClientSize.Height - PageNeed(page)); });
+            }, delegate { if (gen == footerGen) footer.Height = Math.Max(S(176), Body.ClientSize.Height - PageNeed(page)); });
         }
 
         public Action<int> PageHook;                      // for --tab-order-test only: when set, ShowPage just reports the page number it was asked for
@@ -5477,7 +5681,7 @@ namespace FiveMFrameCap
             capBox = new NumBox(); capBox.Minimum = Info.MinCap; capBox.Maximum = Info.MaxCap; capBox.Value = Info.DefaultCap; capBox.Left = 16; capBox.Top = 54; capBox.Width = 96;
             capBox.Font = new Font("Segoe UI", 14f, FontStyle.Bold); cCap.Controls.Add(capBox);
             capHint = Small("FPS. 140 is the highest you can pick for now. A higher cap can cause micro-stutter.", 124, 50, 384, 42, "muted"); cCap.Controls.Add(capHint);
-            whyBtn = Btn(Ico.Info, "Why?", 516, 54, Math.Max(100, TextRenderer.MeasureText(Loc.T("Why?"), new Font("Segoe UI", 9.5f)).Width + 52), 36);
+            whyBtn = Btn(Ico.Info, "Why?", 516, 54, Math.Max(100, Dpi.TextW(Loc.T("Why?"), new Font("Segoe UI", 9.5f)) + 52), 36);
             whyBtn.Click += delegate { using (WhyForm w = new WhyForm()) w.ShowDialog(this); };
             cCap.Controls.Add(whyBtn);
             int aw = FitW("Apply cap to the ticked builds", 290); applyBtn = Btn(Ico.Accept, "Apply cap to the ticked builds", CardW - 16 - aw, 50, aw, 44); applyBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
@@ -5524,20 +5728,20 @@ namespace FiveMFrameCap
             }
             if (gpus.Count == 0) sb.AppendLine(Loc.T("No graphics card found."));
             // two lines fit in the card; every card after that makes the card, and the blocks under it, 20 px taller
-            int extra = Math.Max(0, (gpus.Count - 2) * 20);
-            gpuLabel.Height = 40 + extra; gpuDrv.Height = 40 + extra; gpuMem.Height = 40 + extra; modeLabel.Top = 84 + extra;
-            cGpuCard.Height = 126 + extra; cBuildsCard.Top = 150 + extra; cCapCard.Top = 422 + extra;
+            int extra = Math.Max(0, (gpus.Count - 2) * S(20));
+            gpuLabel.Height = S(40) + extra; gpuDrv.Height = S(40) + extra; gpuMem.Height = S(40) + extra; modeLabel.Top = S(84) + extra;
+            cGpuCard.Height = S(126) + extra; cBuildsCard.Top = S(150) + extra; cCapCard.Top = S(422) + extra;
             LayoutFooter(false);
             gpuLabel.Text = sb.ToString();
-            gpuLabel.Width = Math.Max(280, maxW + 8);
-            gpuDrv.Left = gpuLabel.Left + gpuLabel.Width + 20;
-            gpuDrv.Width = Math.Max(100, maxDrv + 10);                                   // the driver column is as wide as its widest line
+            gpuLabel.Width = Math.Max(S(280), maxW + S(8));
+            gpuDrv.Left = gpuLabel.Left + gpuLabel.Width + S(20);
+            gpuDrv.Width = Math.Max(S(100), maxDrv + S(10));                                   // the driver column is as wide as its widest line
             gpuDrv.Text = sd.ToString();
-            gpuMem.Left = gpuDrv.Left + gpuDrv.Width + 16;                               // the memory column starts at ONE place for every card
-            gpuMem.Width = Math.Max(100, Math.Min(maxMem + 10, CardW - 16 - gpuMem.Left));
+            gpuMem.Left = gpuDrv.Left + gpuDrv.Width + S(16);                               // the memory column starts at ONE place for every card
+            gpuMem.Width = Math.Max(S(100), Math.Min(maxMem + S(10), S(CardW) - S(16) - gpuMem.Left));
             gpuMem.Text = sm.ToString();
             modeLabel.Text = Loc.T(modeText) + (Finder.HasUnsupportedDedicated(gpus) && modeText != IntelOnlyText ? "  " + Loc.T("An Intel Arc card was also found: not supported at the moment.") : "");
-            tidyBtn.Top = modeLabel.Top - 2;
+            tidyBtn.Top = modeLabel.Top - S(2);
             bool dgpuOption = GpuPref.Wanted(gpus);
             gpuSwitch.Visible = dgpuOption; gpuSwitchText.Visible = dgpuOption;
             UpdateBudgetAdvice();
@@ -6209,6 +6413,43 @@ namespace FiveMFrameCap
         public void TestStartVramRead() { StartVramRead(); }
         public string TestModeLabel() { return modeLabel.Text; }
         public void TestSetGpus(List<Gpu> list) { gpus = list; ShowGpus("NVIDIA mode: works with the NVIDIA driver."); }
+        // for --dpi-test: the window and every tab
+        public void DpiCheckAll(Action<bool, string> ck)
+        {
+            ck(!(Dpi.Aware && Dpi.Scale > 1.001f) || IsDpiScaled, "main window: was scaled by " + Dpi.Scale);
+            ck(Math.Abs(TitleBar.Height - Dpi.S(46)) <= 1, "main window: title bar " + TitleBar.Height + " px (expected " + Dpi.S(46) + ")");
+            Rectangle wa = Screen.FromControl(this).WorkingArea;
+            ck(Width <= wa.Width && Height <= wa.Height, "main window: " + Width + "x" + Height + " fits the work area " + wa.Width + "x" + wa.Height);
+            // the tabs in the title bar end before the buttons on the right (a tab that is too wide covers them)
+            int lastRight = 0;
+            foreach (ChromeTab ct in TabsByPage()) lastRight = Math.Max(lastRight, ct.Right);
+            int buttonsLeft = themeSystem.Parent != null ? themeSystem.Parent.Left : Width;
+            ck(lastRight <= buttonsLeft, "title bar: the last tab ends at " + lastRight + " px, the buttons on the right start at " + buttonsLeft + " px");
+            // each tab is as wide as its text plus the room for the icon, scaled once (a size measured in real pixels and then scaled again would be too wide)
+            foreach (ChromeTab ct in TabsByPage())
+            {
+                int want = TextRenderer.MeasureText(ct.Text, ct.Font).Width + Dpi.S(62);
+                ck(Math.Abs(ct.Width - want) <= 3, "title bar: the tab \"" + ct.Text + "\" is " + ct.Width + " px wide, expected about " + want + " px");
+            }
+            // the log filter pills end before the buttons on the right of the log
+            foreach (Control lc in logPanel.Controls) if (lc is Panel && !(lc is Card) && lc.Dock == DockStyle.Top) DpiCheck.Container(lc, "log bar", ck);
+            Panel[] pages = new Panel[] { pageCap, pageDns, pageCache, pageGfx };
+            string[] names = new string[] { "Frame cap tab", "DNS tab", "FiveM cache tab", "Graphics tab" };
+            for (int p = 0; p < 4; p++)
+            {
+                ShowPage(p);
+                for (int i = 0; i < 10; i++) { Application.DoEvents(); Thread.Sleep(40); }
+                DpiCheck.Tree(pages[p], names[p], ck);
+            }
+            ShowPage(2); DemoResetMode(true);
+            for (int i = 0; i < 20; i++) { Application.DoEvents(); Thread.Sleep(40); }
+            DpiCheck.Tree(pageCache, "FiveM cache tab with Reset mode on", ck);
+            DemoResetMode(false);
+        }
+
+        // for --pure-icon-test: the button of the desktop icon
+        public string[] TestPureIconButton() { return new string[] { cacheIcon.Text, cacheIcon.Enabled.ToString(), cacheIcon.Parent != null ? cacheIcon.Parent.GetType().Name : "none" }; }
+
         public string[] TestBudgetButton()
         {
             // the form is not shown in the test, so Visible would say false for every control: ask for the visible flag of the button itself
@@ -6371,14 +6612,14 @@ namespace FiveMFrameCap
             p.Controls.Add(desc);
             include = new CheckBox(); include.Text = Loc.T("Include in the clean"); include.AutoSize = false; include.Left = 14; include.Top = 172; include.Width = 250; include.Height = 28;
             include.Anchor = AnchorStyles.Top | AnchorStyles.Left;
-            p.Controls.Add(include); p.Resize += delegate { int cw = Math.Max(60, p.Width - 32); foreach (Control cc in p.Controls) if (cc is Label || cc is CheckBox) cc.Width = cw; };
+            p.Controls.Add(include); p.Resize += delegate { int cw = Math.Max(Dpi.S(60), p.Width - Dpi.S(32)); foreach (Control cc in p.Controls) if (cc is Label || cc is CheckBox) cc.Width = cw; };
             return p;
         }
 
         void BuildCachePage()
         {
             Card cWhich = NewCard("Which FiveM", Ico.Folder, 12, 108); pageCache.Controls.Add(cWhich);
-            int rw = FitW("Search again", 150); int instW = Math.Max(100, TextRenderer.MeasureText(Loc.T("FiveM install:"), new Font("Segoe UI", 9f)).Width + 14); cWhich.Controls.Add(Small("FiveM install:", 16, 52, instW, 22, null));
+            int rw = FitW("Search again", 150); int instW = Math.Max(100, Dpi.TextW(Loc.T("FiveM install:"), new Font("Segoe UI", 9f)) + 14); cWhich.Controls.Add(Small("FiveM install:", 16, 52, instW, 22, null));
             cacheRoots = new DropBox(); cacheRoots.Left = 16 + instW + 4; cacheRoots.Top = 48; cacheRoots.Width = CardW - (16 + instW + 4) - 16 - rw - 10;
             cacheRoots.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right; cacheRoots.SelectedIndexChanged += delegate { RefreshCacheSizes(); }; cWhich.Controls.Add(cacheRoots);
             cacheRefresh = Btn(Ico.Search, "Search again", CardW - 16 - rw, 44, rw, 34); cacheRefresh.Anchor = AnchorStyles.Top | AnchorStyles.Right; cacheRefresh.Click += delegate { Rescan(null); }; cWhich.Controls.Add(cacheRefresh);
@@ -6398,15 +6639,21 @@ namespace FiveMFrameCap
             cbDeep.CheckedChanged += DeepChanged;
             pageCache.Controls.Add(t);
 
-            Card cGo = NewCard("", "", 358, 116); pageCache.Controls.Add(cGo);
+            Card cGo = NewCard("", "", 358, 162); pageCache.Controls.Add(cGo);
             cacheTotal = new Label(); cacheTotal.Left = 16; cacheTotal.Top = 12; cacheTotal.Width = CardW - 32; cacheTotal.Height = 28; cacheTotal.Font = new Font("Segoe UI", 11f, FontStyle.Bold); cacheTotal.Text = "..."; cacheTotal.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right; cGo.Controls.Add(cacheTotal);
             cacheClean = Btn(Ico.Delete, "Clean cache", 16, 54, 230, 48); cacheClean.Tag = "primary"; cacheClean.Font = new Font("Segoe UI", 10.5f, FontStyle.Bold); cacheClean.Click += CacheCleanClick; cGo.Controls.Add(cacheClean);
             cacheStart = Btn(Ico.Play, "Start FiveM", 256, 54, 200, 48); cacheStart.Font = new Font("Segoe UI", 10.5f, FontStyle.Bold); cacheStart.Enabled = false; cacheStart.Click += StartFiveMClick; cGo.Controls.Add(cacheStart);
             cbPure = new CheckBox(); cbPure.Text = Loc.T("Pure mode (-pure_1)"); cbPure.Left = 476; cbPure.Top = 54; cbPure.Width = 300; cbPure.Height = 26; cGo.Controls.Add(cbPure);
             cGo.Controls.Add(Small("ignores local file changes; for troubleshooting mods", 498, 80, 420, 22, "muted"));
+            // a second row: an icon on the desktop that starts FiveM in pure mode
+            int iw = FitW("Desktop icon: pure mode", 260);
+            cacheIcon = Btn(Ico.Link, "Desktop icon: pure mode", 16, 112, iw, 36); cacheIcon.Enabled = false; cacheIcon.Click += PureIconClick;
+            tip.SetToolTip(cacheIcon, Loc.T("Makes an icon on your desktop that starts FiveM with -pure_1 (FiveM then ignores local file changes; for troubleshooting mods)."));
+            cGo.Controls.Add(cacheIcon);
+            cGo.Controls.Add(Small("Makes an icon on your desktop that starts FiveM in pure mode.", 16 + iw + 14, 118, 560, 22, "muted"));
 
             // the most extreme clean: a block of its own, and the button asks again in a big warning window
-            cReset = NewCard("Reset (the most extreme clean)", Ico.Warning, 486, 88); pageCache.Controls.Add(cReset);
+            cReset = NewCard("Reset (the most extreme clean)", Ico.Warning, 532, 88); pageCache.Controls.Add(cReset);
             int wipeW = FitW("Reset FiveM ...", 230);
             cacheWipe = Btn(Ico.Delete, "Reset FiveM ...", CardW - 16 - wipeW, 54, wipeW, 50); cacheWipe.Tag = "danger"; cacheWipe.Font = new Font("Segoe UI", 10.5f, FontStyle.Bold);
             cacheWipe.Anchor = AnchorStyles.Top | AnchorStyles.Right; cacheWipe.Click += CacheResetClick; cReset.Controls.Add(cacheWipe);
@@ -6429,7 +6676,7 @@ namespace FiveMFrameCap
             cReset.Warn = on; cReset.Invalidate();
             resetOffLine.Visible = !on;
             wipeBig.Visible = on; wipeDesc.Visible = on; cacheWipe.Visible = on;
-            int from = cReset.Height, to = on ? 132 : 88;
+            int from = cReset.Height, to = on ? S(132) : S(88);
             int gen = ++resetGen;
             if (!IsHandleCreated || !pageCache.Visible) { cReset.Height = to; LayoutFooter(false); return; }
             Fx.Run(200, delegate(float p)
@@ -6465,6 +6712,7 @@ namespace FiveMFrameCap
             string root = CurrentRoot();
             canStart = !running && root != null && CacheTool.FiveMExe(root) != null;
             cacheStart.Enabled = !busy && canStart;
+            cacheIcon.Enabled = !busy && root != null && CacheTool.FiveMExe(root) != null;
             foreach (Process p in r) p.Dispose();
         }
 
@@ -6478,7 +6726,7 @@ namespace FiveMFrameCap
                 cacheTotal.Text = Loc.T("No FiveM folder found. Use \"Search again\", or pick a folder on the frame cap tab.");
                 sizeTemp.Text = "-"; sizeLogs.Text = "-"; sizeDeep.Text = "-";
                 descTemp.Text = ""; descLogs.Text = ""; descDeep.Text = "";
-                canStart = false; cacheStart.Enabled = false;
+                canStart = false; cacheStart.Enabled = false; cacheIcon.Enabled = false;
                 return;
             }
             // not on this tab: do not touch the disk and do not write in the log. The tab measures when it is opened.
@@ -6666,6 +6914,25 @@ namespace FiveMFrameCap
             UpdateRunning();
         }
 
+        // the icon on the desktop that starts FiveM in pure mode
+        void PureIconClick(object s, EventArgs e)
+        {
+            string root = CurrentRoot();
+            string exe = root == null ? null : CacheTool.FiveMExe(root);
+            if (exe == null) { MessageBox.Show(this, Loc.T("FiveM.exe was not found next to the FiveM.app folder."), Text); return; }
+            string what;
+            string problem = PureIcon.Make(exe, out what);
+            if (problem != null)
+            {
+                Log("Could not make the desktop icon: " + problem); AppLog.Debug("desktop icon error: " + problem);
+                JobDone("bad", Loc.T("The desktop icon was not made"), problem);
+                return;
+            }
+            string lnk = PureIcon.PathOf();
+            Log((what == "already" ? "The desktop icon was already there: " : what == "updated" ? "Desktop icon updated: " : "Desktop icon made: ") + lnk + "   (starts " + exe + " with " + PureIcon.Arguments + ")");
+            JobDone(what == "already" ? "info" : "ok", Loc.T(what == "already" ? "The desktop icon is already there" : what == "updated" ? "The desktop icon was updated" : "Desktop icon made"), lnk);
+        }
+
         // ---------------------------------------------------------------- shared
         void Log(string s) { AppLog.Add(s); }
 
@@ -6816,7 +7083,7 @@ namespace FiveMFrameCap
             busy = b;
             resetBtn.Enabled = !b; gfxApply.Enabled = !b; gfxClose.Enabled = !b; gfxHighest.Enabled = !b; gfxNormal.Enabled = !b; applyBtn.Enabled = !b && (mode == "amd" || mode == "nvidia"); undoBtn.Enabled = !b && (mode == "amd" || mode == "nvidia"); rescanBtn.Enabled = !b; tidyBtn.Enabled = !b; browseBtn.Enabled = !b; capBox.Enabled = !b; whyBtn.Enabled = true;
             dnsFlush.Enabled = !b; dnsSet.Enabled = !b; dnsUndo.Enabled = !b; dnsRefresh.Enabled = !b; cbExtraFlush.Enabled = !b;
-            cacheClean.Enabled = !b; cacheWipe.Enabled = !b; resetSwitch.Enabled = !b; gpuSwitch.Enabled = !b; cacheRefresh.Enabled = !b; cacheClose.Enabled = !b; cacheRoots.Enabled = !b; cacheStart.Enabled = !b && canStart;
+            cacheClean.Enabled = !b; cacheWipe.Enabled = !b; resetSwitch.Enabled = !b; gpuSwitch.Enabled = !b; cacheRefresh.Enabled = !b; cacheClose.Enabled = !b; cacheRoots.Enabled = !b; cacheStart.Enabled = !b && canStart; cacheIcon.Enabled = !b && CurrentRoot() != null && CacheTool.FiveMExe(CurrentRoot()) != null;
         }
     }
 
@@ -7167,9 +7434,16 @@ namespace FiveMFrameCap
                            "Tendrás que volver a iniciar sesión en FiveM y podrías perder ajustes locales. Úsalo solo si la limpieza normal no ayudó." },
             new string[] { "Pure mode (-pure_1)", "Pure-modus (-pure_1)", "Pure-Modus (-pure_1)", "Mode pure (-pure_1)", "Modo puro (-pure_1)" },
             new string[] { "ignores local file changes; for troubleshooting mods", "negeert lokale bestandswijzigingen; voor het opsporen van mod-problemen", "ignoriert lokale Dateiänderungen; zur Fehlersuche bei Mods", "ignore les modifications locales de fichiers ; pour dépanner les mods", "ignora los cambios locales de archivos; para solucionar problemas con mods" },
+            new string[] { "Desktop icon: pure mode", "Bureaubladpictogram: pure-modus", "Desktop-Symbol: Pure-Modus", "Icône du bureau : mode pure", "Icono del escritorio: modo puro" },
+            new string[] { "Makes an icon on your desktop that starts FiveM in pure mode.", "Maakt een pictogram op je bureaublad dat FiveM in pure-modus start.", "Legt ein Symbol auf den Desktop, das FiveM im Pure-Modus startet.", "Crée sur le bureau une icône qui lance FiveM en mode pure.", "Crea en el escritorio un icono que inicia FiveM en modo puro." },
+            new string[] { "Makes an icon on your desktop that starts FiveM with -pure_1 (FiveM then ignores local file changes; for troubleshooting mods).", "Maakt een pictogram op je bureaublad dat FiveM met -pure_1 start (FiveM negeert dan lokale bestandswijzigingen; voor het opsporen van mod-problemen).", "Legt ein Symbol auf den Desktop, das FiveM mit -pure_1 startet (FiveM ignoriert dann lokale Dateiänderungen; zur Fehlersuche bei Mods).", "Crée sur le bureau une icône qui lance FiveM avec -pure_1 (FiveM ignore alors les modifications locales de fichiers ; pour dépanner les mods).", "Crea en el escritorio un icono que inicia FiveM con -pure_1 (FiveM ignora entonces los cambios locales de archivos; para solucionar problemas con mods)." },
+            new string[] { "Desktop icon made", "Bureaubladpictogram gemaakt", "Desktop-Symbol erstellt", "Icône du bureau créée", "Icono del escritorio creado" },
+            new string[] { "The desktop icon was updated", "Het bureaubladpictogram is bijgewerkt", "Das Desktop-Symbol wurde aktualisiert", "L'icône du bureau a été mise à jour", "El icono del escritorio se actualizó" },
+            new string[] { "The desktop icon is already there", "Het bureaubladpictogram staat er al", "Das Desktop-Symbol ist schon da", "L'icône du bureau est déjà là", "El icono del escritorio ya existe" },
+            new string[] { "The desktop icon was not made", "Het bureaubladpictogram is niet gemaakt", "Das Desktop-Symbol wurde nicht erstellt", "L'icône du bureau n'a pas été créée", "El icono del escritorio no se creó" },
             new string[] { "Clean cache", "Cache opschonen", "Cache bereinigen", "Nettoyer le cache", "Limpiar caché" },
             new string[] { "Start FiveM", "FiveM starten", "FiveM starten", "Lancer FiveM", "Iniciar FiveM" },
-            new string[] { "FiveM is running ({0} process(es)). Close it before cleaning.", "FiveM draait ({0} proces(sen)). Sluit het vóór het opschonen.", "FiveM läuft ({0} Prozess(e)). Schließen Sie es vor der Bereinigung.", "FiveM est en cours d'exécution ({0} processus). Fermez-le avant de nettoyer.", "FiveM se está ejecutando ({0} proceso(s)). Árralo antes de limpiar." },
+            new string[] { "FiveM is running ({0} process(es)). Close it before cleaning.", "FiveM draait ({0} proces(sen)). Sluit het vóór het opschonen.", "FiveM läuft ({0} Prozess(e)). Schließen Sie es vor der Bereinigung.", "FiveM est en cours d'exécution ({0} processus). Fermez-le avant de nettoyer.", "FiveM se está ejecutando ({0} proceso(s)). Ciérralo antes de limpiar." },
             new string[] { "FiveM is closed. Good.", "FiveM is gesloten. Goed.", "FiveM ist geschlossen. Gut.", "FiveM est fermé. Parfait.", "FiveM está cerrado. Bien." },
             new string[] { "No FiveM folder found. Use \"Search again\", or pick a folder on the frame cap tab.",
                            "Geen FiveM-map gevonden. Gebruik \"Opnieuw zoeken\" of kies een map op het tabblad FPS-limiet.",
@@ -7186,7 +7460,7 @@ namespace FiveMFrameCap
             new string[] { "Close FiveM now? Anything you have open in the game is lost.", "FiveM nu sluiten? Alles wat je in het spel open hebt staan gaat verloren.", "FiveM jetzt schließen? Alles, was im Spiel offen ist, geht verloren.", "Fermer FiveM maintenant ? Tout ce qui est ouvert dans le jeu sera perdu.", "¿Cerrar FiveM ahora? Se perderá todo lo que tengas abierto en el juego." },
             new string[] { "No FiveM folder is selected.", "Er is geen FiveM-map gekozen.", "Es ist kein FiveM-Ordner ausgewählt.", "Aucun dossier FiveM n'est sélectionné.", "No hay ninguna carpeta de FiveM seleccionada." },
             new string[] { "Include at least one card.", "Neem minstens één kaart mee.", "Beziehen Sie mindestens eine Karte ein.", "Incluez au moins une carte.", "Incluye al menos una tarjeta." },
-            new string[] { "FiveM is running. Close it first (the button \"Close FiveM for me\" does that).", "FiveM draait. Sluit het eerst (de knop \"Sluit FiveM voor mij\" doet dat).", "FiveM läuft. Schließen Sie es zuerst (die Schaltfläche \"FiveM für mich schließen\" erledigt das).", "FiveM est en cours d'exécution. Fermez-le d'abord (le bouton \"Fermer FiveM pour moi\" le fait).", "FiveM se está ejecutando. Árralo primero (el botón \"Cerrar FiveM por mí\" lo hace)." },
+            new string[] { "FiveM is running. Close it first (the button \"Close FiveM for me\" does that).", "FiveM draait. Sluit het eerst (de knop \"Sluit FiveM voor mij\" doet dat).", "FiveM läuft. Schließen Sie es zuerst (die Schaltfläche \"FiveM für mich schließen\" erledigt das).", "FiveM est en cours d'exécution. Fermez-le d'abord (le bouton \"Fermer FiveM pour moi\" le fait).", "FiveM se está ejecutando. Ciérralo primero (el botón \"Cerrar FiveM por mí\" lo hace)." },
             new string[] { "Clean these (about {0})?\r\n\r\n - {1}\r\n\r\nFolder: {2}", "Dit opschonen (ongeveer {0})?\r\n\r\n - {1}\r\n\r\nMap: {2}", "Dies bereinigen (etwa {0})?\r\n\r\n - {1}\r\n\r\nOrdner: {2}", "Nettoyer ceci (environ {0}) ?\r\n\r\n - {1}\r\n\r\nDossier : {2}", "¿Limpiar esto (unos {0})?\r\n\r\n - {1}\r\n\r\nCarpeta: {2}" },
             new string[] { "FiveM.exe was not found next to the FiveM.app folder.", "FiveM.exe is niet gevonden naast de map FiveM.app.", "FiveM.exe wurde neben dem Ordner FiveM.app nicht gefunden.", "FiveM.exe est introuvable à côté du dossier FiveM.app.", "No se encontró FiveM.exe junto a la carpeta FiveM.app." },
             new string[] { "FiveM is already running.", "FiveM draait al.", "FiveM läuft bereits.", "FiveM est déjà en cours d'exécution.", "FiveM ya se está ejecutando." },
@@ -7878,6 +8152,75 @@ namespace FiveMFrameCap
 
     // ---------------------------------------------------------------- start a program with normal rights
     // FiveM and Radeon Software must not run as administrator, also when this copy does.
+    // ---------------------------------------------------------------- a desktop icon that starts FiveM in pure mode
+    static class PureIcon
+    {
+        public const string FileName = "FiveM (pure mode).lnk";
+        public const string Arguments = "-pure_1";
+        public static string FolderOverride = null;      // the tests make the icon in a scratch folder, never on the real desktop
+
+        public static string Folder() { return FolderOverride ?? Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory); }
+        public static string PathOf() { return Path.Combine(Folder(), FileName); }
+
+        static object Get(object o, string name) { return o.GetType().InvokeMember(name, BindingFlags.GetProperty, null, o, null); }
+        static void Put(object o, string name, object value) { o.GetType().InvokeMember(name, BindingFlags.SetProperty, null, o, new object[] { value }); }
+
+        // what an icon says: target, arguments, folder to start in, icon, description (null when there is no icon file or it cannot be read)
+        public static string[] ReadAll(string lnk)
+        {
+            if (!File.Exists(lnk)) return null;
+            object sh = null, sc = null;
+            try
+            {
+                Type t = Type.GetTypeFromProgID("WScript.Shell");
+                sh = Activator.CreateInstance(t);
+                sc = t.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, sh, new object[] { lnk });
+                return new string[] { Get(sc, "TargetPath") as string, Get(sc, "Arguments") as string, Get(sc, "WorkingDirectory") as string, Get(sc, "IconLocation") as string, Get(sc, "Description") as string };
+            }
+            catch (Exception) { return null; }
+            finally { if (sc != null) Marshal.ReleaseComObject(sc); if (sh != null) Marshal.ReleaseComObject(sh); }
+        }
+
+        static bool Same(string[] now, string fiveMExe)
+        {
+            return now != null && string.Equals(now[0], fiveMExe, StringComparison.OrdinalIgnoreCase) && string.Equals((now[1] ?? "").Trim(), Arguments, StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Makes the icon on the desktop, or updates it. Returns null when it worked (what = made, updated or already), else the reason it did not.
+        public static string Make(string fiveMExe, out string what)
+        {
+            what = "";
+            try
+            {
+                if (string.IsNullOrEmpty(fiveMExe) || !File.Exists(fiveMExe)) return "FiveM.exe was not found.";
+                string folder = Folder();
+                if (!Directory.Exists(folder)) return "The desktop folder was not found: " + folder;
+                string lnk = PathOf();
+                bool had = File.Exists(lnk);
+                if (had && Same(ReadAll(lnk), fiveMExe)) { what = "already"; return null; }
+                Type t = Type.GetTypeFromProgID("WScript.Shell");
+                if (t == null) return "Windows could not make a shortcut (WScript.Shell is missing).";
+                object sh = Activator.CreateInstance(t);
+                object sc = null;
+                try
+                {
+                    sc = t.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, sh, new object[] { lnk });
+                    Put(sc, "TargetPath", fiveMExe);
+                    Put(sc, "Arguments", Arguments);
+                    Put(sc, "WorkingDirectory", Path.GetDirectoryName(fiveMExe));
+                    Put(sc, "IconLocation", fiveMExe + ",0");
+                    Put(sc, "Description", "FiveM in pure mode (made by FiveM Toolbox)");
+                    sc.GetType().InvokeMember("Save", BindingFlags.InvokeMethod, null, sc, null);
+                }
+                finally { if (sc != null) Marshal.ReleaseComObject(sc); Marshal.ReleaseComObject(sh); }
+                if (!Same(ReadAll(lnk), fiveMExe)) return "The icon was saved, but reading it back did not give the same target.";
+                what = had ? "updated" : "made";
+                return null;
+            }
+            catch (Exception ex) { return ex.Message; }
+        }
+    }
+
     static class Launch
     {
         public static void Normal(string exe, string args, string dir)
@@ -8000,7 +8343,7 @@ namespace FiveMFrameCap
                 if (args[pvI] == "--pretend-vram-use" && pvI + 1 < args.Length && int.TryParse(args[pvI + 1], out pvMb) && pvMb >= 1 && pvMb <= 262144) { Finder.PretendUseMb = pvMb; pvI++; continue; }
                 pvArgs.Add(args[pvI]);
             }
-            args = pvArgs.ToArray();
+            args = Dpi.Init(pvArgs.ToArray());
             if (args.Length >= 1 && args[0].StartsWith("--dns-")) return DnsTool.HelperMain(args);
             if (args.Length >= 1 && (args[0] == "--nv-apply" || args[0] == "--nv-undo"))
             {
@@ -9052,7 +9395,7 @@ namespace FiveMFrameCap
                 if (Directory.Exists(oldDir) && !Directory.Exists(newDir)) Directory.Move(oldDir, newDir);
             }
             catch (Exception) { }
-            bool isShot = args.Length >= 2 && (args[0] == "--shot" || args[0] == "--reset-ui-test" || args[0] == "--reset-form-test");
+            bool isShot = args.Length >= 2 && (args[0] == "--shot" || args[0] == "--reset-ui-test" || args[0] == "--reset-form-test" || args[0] == "--dpi-test" || args[0] == "--pure-icon-test");
             bool relaunched = false;
             foreach (string a0 in args) if (a0 == "--page" || a0 == "--relaunch") relaunched = true;
             if (!isShot)
@@ -9127,6 +9470,103 @@ namespace FiveMFrameCap
                 catch (Exception uex) { us.AppendLine("EXCEPTION " + uex); }
                 File.WriteAllText(args[4].Replace(".png", ".txt"), us.ToString());
                 return 0;
+            }
+            if (args.Length >= 2 && args[0] == "--pure-icon-test")
+            {
+                // --pure-icon-test <outfile>: the desktop icon for pure mode. It is made in a scratch folder, never on the real desktop.
+                StringBuilder pi = new StringBuilder();
+                int pfail = 0;
+                Action<bool, string> pck = delegate(bool good, string what) { if (!good) pfail++; pi.AppendLine((good ? "PASS  " : "FAIL  ") + what); };
+                string ptmp = Path.Combine(Path.GetTempPath(), "fivemtoolbox-icontest-" + Guid.NewGuid().ToString("N"));
+                string realLnk = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), PureIcon.FileName);
+                bool realBefore = File.Exists(realLnk);
+                DateTime realTime = realBefore ? File.GetLastWriteTimeUtc(realLnk) : DateTime.MinValue;
+                try
+                {
+                    Theme.Force("dark"); Loc.Force("en");
+                    string desk = Path.Combine(ptmp, "desk"); Directory.CreateDirectory(desk);
+                    string exeA = Path.Combine(ptmp, "FiveM A", "FiveM.exe"), exeB = Path.Combine(ptmp, "F\u00eeve B", "FiveM.exe");
+                    Directory.CreateDirectory(Path.GetDirectoryName(exeA)); Directory.CreateDirectory(Path.GetDirectoryName(exeB));
+                    File.WriteAllBytes(exeA, new byte[] { 1 }); File.WriteAllBytes(exeB, new byte[] { 2 });
+                    PureIcon.FolderOverride = desk;
+                    string lnk = Path.Combine(desk, "FiveM (pure mode).lnk");
+                    string what, problem;
+                    pck(PureIcon.FileName == "FiveM (pure mode).lnk", "the icon is called FiveM (pure mode).lnk");
+                    problem = PureIcon.Make(exeA, out what);
+                    pck(problem == null && what == "made" && File.Exists(lnk), "the first run makes the icon (result '" + what + "', problem '" + problem + "')");
+                    string[] r1 = PureIcon.ReadAll(lnk);
+                    pck(r1 != null && string.Equals(r1[0], exeA, StringComparison.OrdinalIgnoreCase), "it starts the FiveM.exe of that install (" + (r1 != null ? r1[0] : "none") + ")");
+                    pck(r1 != null && r1[1] == "-pure_1", "with exactly -pure_1 (" + (r1 != null ? r1[1] : "none") + ")");
+                    pck(r1 != null && string.Equals(r1[2], Path.GetDirectoryName(exeA), StringComparison.OrdinalIgnoreCase), "it starts in the folder of FiveM.exe (" + (r1 != null ? r1[2] : "none") + ")");
+                    pck(r1 != null && r1[3] != null && r1[3].StartsWith(exeA, StringComparison.OrdinalIgnoreCase), "it has the icon of FiveM.exe (" + (r1 != null ? r1[3] : "none") + ")");
+                    DateTime t1 = File.GetLastWriteTimeUtc(lnk);
+                    Thread.Sleep(1300);
+                    problem = PureIcon.Make(exeA, out what);
+                    pck(problem == null && what == "already", "the same again says 'already' (result '" + what + "', problem '" + problem + "')");
+                    pck(File.GetLastWriteTimeUtc(lnk) == t1, "and does not write the icon file again");
+                    problem = PureIcon.Make(exeB, out what);
+                    string[] r2 = PureIcon.ReadAll(lnk);
+                    pck(problem == null && what == "updated" && r2 != null && string.Equals(r2[0], exeB, StringComparison.OrdinalIgnoreCase), "another install updates the icon, also a path with a space and an accent (result '" + what + "', target " + (r2 != null ? r2[0] : "none") + ")");
+                    problem = PureIcon.Make(Path.Combine(ptmp, "nowhere", "FiveM.exe"), out what);
+                    string[] r3 = PureIcon.ReadAll(lnk);
+                    pck(problem != null && problem.IndexOf("not found", StringComparison.OrdinalIgnoreCase) >= 0 && r3 != null && string.Equals(r3[0], exeB, StringComparison.OrdinalIgnoreCase), "a FiveM.exe that is not there is refused and the icon stays as it was (problem '" + problem + "')");
+                    problem = PureIcon.Make(null, out what);
+                    pck(problem != null, "no path at all is refused");
+                    File.WriteAllBytes(lnk, new byte[] { 1, 2, 3, 4, 5 });
+                    problem = PureIcon.Make(exeA, out what);
+                    string[] r4 = PureIcon.ReadAll(lnk);
+                    pck(problem == null && r4 != null && string.Equals(r4[0], exeA, StringComparison.OrdinalIgnoreCase), "a damaged icon file is replaced by a good one (result '" + what + "', problem '" + problem + "')");
+                    string nodesk = Path.Combine(ptmp, "no desktop here");
+                    PureIcon.FolderOverride = nodesk;
+                    problem = PureIcon.Make(exeA, out what);
+                    pck(problem != null && !Directory.Exists(nodesk), "a desktop folder that is not there is refused and not invented (problem '" + problem + "')");
+                    PureIcon.FolderOverride = desk;
+                    // the button in the window
+                    MainForm pf = new MainForm(2);
+                    string[] pb = pf.TestPureIconButton();
+                    pck(pb[0] == "Desktop icon: pure mode" && pb[2] == "Card", "the cache tab has the button, in a block (" + pb[0] + ", in " + pb[2] + ")");
+                    pck(pb[1] == "False", "the button is off while no FiveM install is known (" + pb[1] + ")");
+                    pf.Dispose();
+                }
+                catch (Exception pex) { pfail++; pi.AppendLine("FAIL  EXCEPTION " + pex); }
+                finally { PureIcon.FolderOverride = null; try { Directory.Delete(ptmp, true); } catch (Exception) { } }
+                bool realAfter = File.Exists(realLnk);
+                pck(realAfter == realBefore && (!realAfter || File.GetLastWriteTimeUtc(realLnk) == realTime), "the REAL desktop was not touched by this test");
+                pi.AppendLine(pfail == 0 ? "ALL PASSED" : "FAILED: " + pfail);
+                File.WriteAllText(args[1], pi.ToString());
+                return pfail == 0 ? 0 : 1;
+            }
+            if (args.Length >= 2 && args[0] == "--dpi-test")
+            {
+                // --dpi-test <outfile>: looks at the main window, every tab and every small window at the screen scaling of THIS PC (this switch is DPI aware, like a normal start).
+                // Add --no-dpi to see the old way (the picture stretched by Windows) for comparison. It shows the windows for a few seconds.
+                StringBuilder ds = new StringBuilder();
+                int dpass = 0, dfail = 0;
+                Action<bool, string> dck = delegate(bool good, string what) { if (good) dpass++; else dfail++; ds.AppendLine((good ? "PASS  " : "FAIL  ") + what); };
+                try
+                {
+                    Theme.Force("dark"); Loc.Force("en");
+                    ds.AppendLine("screen scaling: aware=" + Dpi.Aware + ", scale=" + Dpi.Scale);
+                    MainForm df = new MainForm(0);
+                    df.Show();
+                    DateTime dend = DateTime.UtcNow.AddSeconds(10);
+                    while (DateTime.UtcNow < dend) { Application.DoEvents(); Thread.Sleep(50); }
+                    df.DpiCheckAll(dck);
+                    df.Close();
+                    ChromeForm[] dsm = new ChromeForm[] { new DisclaimerForm(), new ChooserForm(), new WhyForm(), new ResetWarningForm(661), new LogForm() };
+                    string[] dsn = new string[] { "welcome window", "start window", "why window", "reset warning window", "log window" };
+                    for (int k = 0; k < dsm.Length; k++)
+                    {
+                        dsm[k].Show();
+                        for (int i = 0; i < 14; i++) { Application.DoEvents(); Thread.Sleep(40); }
+                        DpiCheck.Dialog(dsm[k], dsn[k], dck);
+                        dsm[k].Close();
+                    }
+                }
+                catch (Exception dex) { dfail++; ds.AppendLine("FAIL  EXCEPTION " + dex); }
+                ds.AppendLine(dfail == 0 ? "ALL PASSED (" + dpass + " checks)" : "FAILED: " + dfail + " of " + (dpass + dfail));
+                File.WriteAllText(args[1], ds.ToString());
+                return dfail == 0 ? 0 : 1;
             }
             if (args.Length >= 2 && args[0] == "--shot")
             {
