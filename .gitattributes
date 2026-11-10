@@ -1,0 +1,10 @@
+# the source files are saved with Windows line endings (and the .cs file with a BOM, it holds accented letters)
+*.cs text eol=crlf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.md text eol=lf
+LICENSE text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+*.ico binary
+*.png binary
