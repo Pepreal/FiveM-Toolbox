@@ -847,6 +847,254 @@ namespace FiveMFrameCap
         }
     }
 
+    // ---------------------------------------------------------------- Radeon Software's list of games (Gaming > Games)
+    // %LOCALAPPDATA%\AMD\CN\gmdb.blb is plain JSON text: {"engines": [...], "games": [ one object per game ], ...}. A game that the user removes in Radeon Software stays in the
+    // file with "hidden": "TRUE". The profile of a game (the Radeon Chill values) is in User.blb and is a different thing: a profile without an entry here works, but Radeon Software
+    // does not show the game. The text is handled as bytes (ISO-8859-1: one character per byte), so everything outside the changed place stays byte for byte the same.
+    static class GameList
+    {
+        public static string PathOverride = null;   // for tests
+        public static string FilePath { get { return PathOverride ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"AMD\CN\gmdb.blb"); } }
+        static readonly Encoding Raw = Encoding.GetEncoding("iso-8859-1");
+
+        public static string ToText(byte[] b) { return Raw.GetString(b); }
+        public static byte[] ToBytes(string t) { return Raw.GetBytes(t); }
+
+        class Span { public int A; public int B; }   // A = place of the "{" of a game, B = place of its "}"
+
+        // The games of the "games" array of the root object. null when the text is not in that form.
+        static List<Span> Games(string t)
+        {
+            int depth = 0, i = 0, n = t.Length, arrDepth = -1, objStart = -1;
+            bool inArray = false;
+            List<Span> list = null;
+            while (i < n)
+            {
+                char c = t[i];
+                if (c == '"')
+                {
+                    int j = i + 1;
+                    while (j < n && t[j] != '"') { if (t[j] == '\\') j++; j++; }
+                    if (j >= n) return null;
+                    if (depth == 1 && list == null && j - i - 1 == 5 && string.CompareOrdinal(t, i + 1, "games", 0, 5) == 0)
+                    {
+                        int k = j + 1;
+                        while (k < n && char.IsWhiteSpace(t[k])) k++;
+                        if (k < n && t[k] == ':')
+                        {
+                            k++;
+                            while (k < n && char.IsWhiteSpace(t[k])) k++;
+                            if (k < n && t[k] == '[') { list = new List<Span>(); inArray = true; depth++; arrDepth = depth; i = k + 1; continue; }
+                        }
+                    }
+                    i = j + 1; continue;
+                }
+                if (c == '{' || c == '[')
+                {
+                    depth++;
+                    if (inArray && c == '{' && depth == arrDepth + 1) objStart = i;
+                }
+                else if (c == '}' || c == ']')
+                {
+                    if (inArray && c == '}' && depth == arrDepth + 1 && objStart >= 0) { Span s = new Span(); s.A = objStart; s.B = i; list.Add(s); objStart = -1; }
+                    if (inArray && c == ']' && depth == arrDepth) return list;
+                    depth--;
+                }
+                i++;
+            }
+            return null;
+        }
+
+        public static int Count(string t) { List<Span> g = Games(t); return g == null ? -1 : g.Count; }
+
+        static string Unescape(string raw)
+        {
+            string s = Encoding.UTF8.GetString(Raw.GetBytes(raw));
+            if (s.IndexOf('\\') < 0) return s;
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < s.Length; i++)
+            {
+                char c = s[i];
+                if (c != '\\' || i + 1 >= s.Length) { sb.Append(c); continue; }
+                char d = s[++i];
+                if (d == 'u' && i + 4 < s.Length)
+                {
+                    int v;
+                    if (int.TryParse(s.Substring(i + 1, 4), System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out v)) { sb.Append((char)v); i += 4; continue; }
+                }
+                switch (d)
+                {
+                    case 'n': sb.Append('\n'); break;
+                    case 'r': sb.Append('\r'); break;
+                    case 't': sb.Append('\t'); break;
+                    case 'b': sb.Append('\b'); break;
+                    case 'f': sb.Append('\f'); break;
+                    default: sb.Append(d); break;
+                }
+            }
+            return sb.ToString();
+        }
+
+        // Text for inside the quotes of a JSON string, as bytes (one character per byte).
+        static string Esc(string s)
+        {
+            StringBuilder sb = new StringBuilder();
+            foreach (byte b in Encoding.UTF8.GetBytes(s))
+            {
+                if (b == '\\') sb.Append("\\\\");
+                else if (b == '"') sb.Append("\\\"");
+                else if (b < 0x20) sb.Append("\\u00").Append(b.ToString("x2"));
+                else sb.Append((char)b);
+            }
+            return sb.ToString();
+        }
+
+        static string StrVal(string obj, string key)
+        {
+            System.Text.RegularExpressions.Match m = System.Text.RegularExpressions.Regex.Match(obj, "\"" + System.Text.RegularExpressions.Regex.Escape(key) + "\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"");
+            return m.Success ? Unescape(m.Groups[1].Value) : null;
+        }
+
+        // Sets one value (a JSON string with its quotes, or a number) of a game. null when the key is not there exactly once.
+        static string SetRaw(string obj, string key, string jsonValue)
+        {
+            System.Text.RegularExpressions.Regex rx = new System.Text.RegularExpressions.Regex("(\"" + System.Text.RegularExpressions.Regex.Escape(key) + "\"\\s*:\\s*)(\"(?:[^\"\\\\]|\\\\.)*\"|-?[0-9]+(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|true|false|null)");
+            if (rx.Matches(obj).Count != 1) return null;
+            return rx.Replace(obj, delegate(System.Text.RegularExpressions.Match m) { return m.Groups[1].Value + jsonValue; });
+        }
+
+        static int Find(string t, List<Span> g, string exe)
+        {
+            for (int i = 0; i < g.Count; i++)
+            {
+                string p = StrVal(t.Substring(g[i].A, g[i].B - g[i].A + 1), "exe_path");
+                if (p != null && string.Equals(p, exe, StringComparison.OrdinalIgnoreCase)) return i;
+            }
+            return -1;
+        }
+
+        public static string EntryText(string t, string exe)
+        {
+            List<Span> g = Games(t);
+            if (g == null) return null;
+            int ix = Find(t, g, exe);
+            return ix < 0 ? null : t.Substring(g[ix].A, g[ix].B - g[ix].A + 1);
+        }
+
+        public static bool IsVisible(string t, string exe)
+        {
+            string e = EntryText(t, exe);
+            return e != null && StrVal(e, "hidden") != "TRUE";
+        }
+
+        // The game to copy for a new entry: a FiveM build that the user added by hand, then any FiveM build, then any program with a name ending in _GTAProcess.exe, then any program added by hand.
+        static int Template(string t, List<Span> g)
+        {
+            int best = -1, bestScore = 99;
+            for (int i = 0; i < g.Count; i++)
+            {
+                string o = t.Substring(g[i].A, g[i].B - g[i].A + 1);
+                string p = StrVal(o, "exe_path") ?? "";
+                bool manual = StrVal(o, "manual") == "TRUE";
+                bool build = System.Text.RegularExpressions.Regex.IsMatch(p, @"\\FiveM_b[0-9]+_GTAProcess\.exe$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                int score = build && manual ? 1 : build ? 2 : p.EndsWith("_GTAProcess.exe", StringComparison.OrdinalIgnoreCase) ? 3 : manual && p.Length > 0 ? 4 : 99;
+                if (score < bestScore) { bestScore = score; best = i; }
+            }
+            return best;
+        }
+
+        // A copy of a game for another exe: the new exe, its name and a new id; Radeon Software starts the counters at zero.
+        static string Clone(string src, string exe, string title)
+        {
+            string o = src;
+            string oldExe = StrVal(src, "exe_path"), oldImg = StrVal(src, "image_info");
+            string[][] must = new string[][] {
+                new string[] { "guid", "\"{" + Guid.NewGuid().ToString().ToLowerInvariant() + "}\"" },
+                new string[] { "exe_path", "\"" + Esc(exe) + "\"" },
+                new string[] { "title", "\"" + Esc(title) + "\"" },
+                new string[] { "hidden", "\"FALSE\"" } };
+            foreach (string[] kv in must) { o = SetRaw(o, kv[0], kv[1]); if (o == null) return null; }
+            string imgNew = oldImg != null && oldExe != null && string.Equals(oldImg, oldExe, StringComparison.OrdinalIgnoreCase) ? "\"" + Esc(exe) + "\"" : "\"\"";
+            string[][] may = new string[][] {
+                new string[] { "image_info", imgNew }, new string[] { "install_location", "\"\"" }, new string[] { "installer_id", "\"\"" }, new string[] { "msstore_id", "\"\"" },
+                new string[] { "lastlaunchtime", "\"\"" }, new string[] { "lastperformancereporttime", "\"\"" },
+                new string[] { "last_played_mins", "0" }, new string[] { "total_played_mins", "0" }, new string[] { "week_played_mins", "0" },
+                new string[] { "averageFPS", "-1" }, new string[] { "percentile95_msec", "-1" }, new string[] { "steam_id", "-1" }, new string[] { "uplay_id", "-1" },
+                new string[] { "origin_id", "-1" }, new string[] { "amdId", "-1" } };
+            foreach (string[] kv in may) { string n = SetRaw(o, kv[0], kv[1]); if (n != null) o = n; }
+            return o;
+        }
+
+        // Makes the game show in Radeon Software's list. Returns the new text (the same text when nothing has to change), or null when it cannot be done (what says why).
+        public static string Show(string t, string exe, string title, out string what)
+        {
+            List<Span> g = Games(t);
+            if (g == null) { what = "the game list file is not in the form this program knows"; return null; }
+            int ix = Find(t, g, exe);
+            string r;
+            if (ix >= 0)
+            {
+                string obj = t.Substring(g[ix].A, g[ix].B - g[ix].A + 1);
+                if (StrVal(obj, "hidden") != "TRUE") { what = "the build is in the list already"; return t; }
+                string o2 = SetRaw(obj, "hidden", "\"FALSE\"");
+                if (o2 == null) { what = "the entry of the build has no \"hidden\" value"; return null; }
+                r = t.Substring(0, g[ix].A) + o2 + t.Substring(g[ix].B + 1);
+                what = "the build was hidden (removed in Radeon Software) and shows again";
+            }
+            else
+            {
+                int tx = Template(t, g);
+                if (tx < 0) { what = "there is no entry in the list to copy"; return null; }
+                string e = Clone(t.Substring(g[tx].A, g[tx].B - g[tx].A + 1), exe, title);
+                if (e == null) { what = "the entry to copy is not in the form this program knows"; return null; }
+                int last = g[g.Count - 1].B;
+                r = t.Substring(0, last + 1) + ",\n        " + e + t.Substring(last + 1);
+                what = "the build was added to the list";
+            }
+            if (!IsVisible(r, exe) || Count(r) != (ix >= 0 ? g.Count : g.Count + 1)) { what = "the check of the new list failed"; return null; }
+            return r;
+        }
+
+        // Hides the game like Radeon Software does when you remove it there. Returns the new text (the same when there is nothing to do), or null (what says why).
+        public static string Hide(string t, string exe, out string what)
+        {
+            List<Span> g = Games(t);
+            if (g == null) { what = "the game list file is not in the form this program knows"; return null; }
+            int ix = Find(t, g, exe);
+            if (ix < 0) { what = "the build is not in the list"; return t; }
+            string obj = t.Substring(g[ix].A, g[ix].B - g[ix].A + 1);
+            if (StrVal(obj, "hidden") == "TRUE") { what = "the build is hidden already"; return t; }
+            string o2 = SetRaw(obj, "hidden", "\"TRUE\"");
+            if (o2 == null) { what = "the entry of the build has no \"hidden\" value"; return null; }
+            string r = t.Substring(0, g[ix].A) + o2 + t.Substring(g[ix].B + 1);
+            if (IsVisible(r, exe) || Count(r) != g.Count) { what = "the check of the new list failed"; return null; }
+            what = "the build is hidden in the list";
+            return r;
+        }
+
+        static string Edit(string exe, string title, bool show, out bool changed, out string what)
+        {
+            changed = false; what = null;
+            string p = FilePath;
+            if (!File.Exists(p)) { what = "there is no game list file"; return what; }
+            string t = Raw.GetString(File.ReadAllBytes(p));
+            string r = show ? Show(t, exe, title, out what) : Hide(t, exe, out what);
+            if (r == null) return what;
+            if (r != t) { byte[] nb = Raw.GetBytes(r); File.WriteAllBytes(p, nb); changed = true; }     // the bytes are built first, then the file is opened
+            return null;
+        }
+
+        // Return null when it worked (changed tells if the file was written), else the reason.
+        public static string ShowInFile(string exe, string title, out bool changed, out string what) { return Edit(exe, title, true, out changed, out what); }
+        public static string HideInFile(string exe, out bool changed, out string what) { return Edit(exe, null, false, out changed, out what); }
+
+        public static bool VisibleInFile(string exe)
+        {
+            try { return File.Exists(FilePath) && IsVisible(Raw.GetString(File.ReadAllBytes(FilePath)), exe); }
+            catch (Exception) { return false; }
+        }
+    }
+
     // ---------------------------------------------------------------- Radeon Software process
     static class Radeon
     {
@@ -2483,7 +2731,51 @@ namespace FiveMFrameCap
             return false;
         }
 
-        // A build that Radeon Software does not know yet: this tool makes its profile (copied from another FiveM build, Radeon Chill on, the cap in both values) through AMD's own library.
+        bool listBackedUp = false;
+        void BackupList(byte[] data)
+        {
+            if (listBackedUp) return;
+            Directory.CreateDirectory(Blb.BackupDir);
+            string p = Path.Combine(Blb.BackupDir, "gmdb.blb." + DateTime.Now.ToString("yyyyMMdd-HHmmss"));
+            File.WriteAllBytes(p, data);
+            Log("Backup saved: " + p);
+            listBackedUp = true;
+        }
+
+        static byte[] ReadList()
+        {
+            try { return File.Exists(GameList.FilePath) ? File.ReadAllBytes(GameList.FilePath) : null; }
+            catch (Exception) { return null; }
+        }
+
+        // Puts the files back as they were before this change (Radeon Software must be closed).
+        static void PutBack(byte[] orig, byte[] listOrig, bool listChanged)
+        {
+            if (orig != null) { File.WriteAllBytes(Blb.Path, orig); Blb.BumpReload(); }
+            if (listChanged && listOrig != null) File.WriteAllBytes(GameList.FilePath, listOrig);
+        }
+
+        // Makes the build show in Radeon Software's list of games (Gaming > Games). Returns true when the file was changed.
+        bool ShowInList(Build b)
+        {
+            bool changed; string what;
+            string err = GameList.ShowInFile(b.Exe, Path.GetFileNameWithoutExtension(b.FileName), out changed, out what);
+            if (err != null) { Log("  Radeon Software's list of games was not changed (" + err + "). The cap works, but the build does not show in Gaming > Games."); return false; }
+            Log("  Radeon Software's list of games: " + what + ".");
+            return changed;
+        }
+
+        bool HideInList(Build b)
+        {
+            bool changed; string what;
+            string err = GameList.HideInFile(b.Exe, out changed, out what);
+            if (err != null) { Log("  Radeon Software's list of games was not changed (" + err + ")."); return false; }
+            Log("  Radeon Software's list of games: " + what + ".");
+            return changed;
+        }
+
+        // A build that Radeon Software does not know yet: this tool makes its profile (copied from another FiveM build, Radeon Chill on, the cap in both values) through AMD's own library,
+        // and makes the build show in the list of games.
         string AddNew(Build b, int cap)
         {
             S("Looking for a profile to copy ...", 0.1);
@@ -2497,35 +2789,45 @@ namespace FiveMFrameCap
             S("Closing Radeon Software ...", 0.25); Log("  Closing Radeon Software (it would write its old settings back otherwise) ...");
             Radeon.Stop();
             string result = null;
-            byte[] orig = null;
+            byte[] orig = null, listOrig = null;
+            bool listChanged = false;
             try
             {
                 orig = File.ReadAllBytes(Blb.Path);
                 AppLog.Debug("profile file before: " + orig.Length + " bytes, md5 " + Md5(orig));
                 Backup(orig);
+                listOrig = ReadList();
+                if (listOrig != null) BackupList(listOrig);
                 S("Making the profile in Radeon Software ...", 0.4);
                 string prof; string err = Adl.AddProfile(b.FileName, b.Dir, props, out prof);
                 if (err != null)
                 {
                     result = "Could not add this build to Radeon Software: " + err + ". Nothing was changed.";
-                    File.WriteAllBytes(Blb.Path, orig); Blb.BumpReload();
+                    PutBack(orig, listOrig, false);
                 }
                 else
                 {
                     Log("  Made the profile " + prof + " and attached " + b.FileName + " to it.");
+                    S("Putting the build in the list of games ...", 0.5);
+                    listChanged = ShowInList(b);
                     Blb.BumpReload();
                     S("Starting Radeon Software again ...", 0.65); Log("  Starting Radeon Software again ...");
                     Radeon.Start();
                     if (WaitFor(b, delegate(Adl.ProfileValues v) { return Val.First(v.Pf) == 1 && Val.First(v.Min) == cap && Val.First(v.Max) == cap; }))
                     {
+                        if (listChanged)
+                        {
+                            if (GameList.VisibleInFile(b.Exe)) Log("  Radeon Software kept the build in its list of games.");
+                            else { Log("  Radeon Software did not keep the build in its list of games. The cap works, but the build does not show in Gaming > Games."); listChanged = false; }
+                        }
                         result = "Set to " + cap + ".";
-                        CapMemory.Save(b.Exe, NewMarker, NewMarker);
+                        CapMemory.Save(b.Exe, NewMarker, listChanged ? NewMarker + ListMark : NewMarker);
                         try { byte[] after = File.ReadAllBytes(Blb.Path); AppLog.Debug("profile file after: " + after.Length + " bytes, md5 " + Md5(after)); } catch (Exception) { }
                     }
                     else
                     {
-                        S("Undoing ...", 0.9); Log("  AMD did not show the new profile, so it is taken out again (the old file is put back) ...");
-                        Radeon.Stop(); File.WriteAllBytes(Blb.Path, orig); Blb.BumpReload();
+                        S("Undoing ...", 0.9); Log("  AMD did not show the new profile, so it is taken out again (the old files are put back) ...");
+                        Radeon.Stop(); PutBack(orig, listOrig, listChanged);
                         result = "Could not confirm the new profile. Nothing was changed.";
                     }
                 }
@@ -2533,7 +2835,7 @@ namespace FiveMFrameCap
             catch (Exception ex)
             {
                 result = "Error: " + ex.Message; AppLog.Debug("exception while adding a build: " + ex);
-                try { Radeon.Stop(); if (orig != null) { File.WriteAllBytes(Blb.Path, orig); Blb.BumpReload(); } } catch (Exception) { }
+                try { Radeon.Stop(); PutBack(orig, listOrig, listChanged); } catch (Exception) { }
             }
             finally
             {
@@ -2542,24 +2844,29 @@ namespace FiveMFrameCap
             return result;
         }
 
-        // Undo for a build that this tool added: the build and its profile are taken out of Radeon Software again.
-        string RemoveNew(Build b)
+        public const string ListMark = ":list";   // after NewMarker: this tool also made the build show in the list of games, so Undo hides it there again
+
+        // Undo for a build that this tool added: the build and its profile are taken out of Radeon Software again (and hidden in the list of games when this tool had put it there).
+        string RemoveNew(Build b, bool inList)
         {
             if (!Adl.Read(b.FileName, b.Dir).Found) { CapMemory.Remove(b.Exe); return "Nothing to undo: the cap is already back."; }
             if (Radeon.Running()) Radeon.Capture();
             S("Closing Radeon Software ...", 0.25); Log("  Closing Radeon Software (it would write its old settings back otherwise) ...");
             Radeon.Stop();
             string result = null;
-            byte[] orig = null;
+            byte[] orig = null, listOrig = null;
+            bool listChanged = false;
             try
             {
                 orig = File.ReadAllBytes(Blb.Path);
                 Backup(orig);
+                if (inList) { listOrig = ReadList(); if (listOrig != null) BackupList(listOrig); }
                 S("Taking the profile out of Radeon Software ...", 0.4);
                 string err = Adl.RemoveProfile(b.FileName, b.Dir);
-                if (err != null) { result = "Could not take this build out of Radeon Software: " + err + ". Nothing was changed."; File.WriteAllBytes(Blb.Path, orig); Blb.BumpReload(); }
+                if (err != null) { result = "Could not take this build out of Radeon Software: " + err + ". Nothing was changed."; PutBack(orig, listOrig, false); }
                 else
                 {
+                    if (inList && listOrig != null) listChanged = HideInList(b);
                     Blb.BumpReload();
                     S("Starting Radeon Software again ...", 0.65); Log("  Starting Radeon Software again ...");
                     Radeon.Start();
@@ -2567,13 +2874,13 @@ namespace FiveMFrameCap
                     bool gone = false;
                     for (int i = 0; i < 12 && !gone; i++) { try { gone = !Adl.Read(b.FileName, b.Dir).Found; } catch (Exception) { } if (!gone) Thread.Sleep(3000); }
                     if (gone) { result = "Cap put back: the build is not in Radeon Software any more."; CapMemory.Remove(b.Exe); }
-                    else { Radeon.Stop(); File.WriteAllBytes(Blb.Path, orig); Blb.BumpReload(); result = "Could not confirm that the build is out. Nothing was changed."; }
+                    else { Radeon.Stop(); PutBack(orig, listOrig, listChanged); result = "Could not confirm that the build is out. Nothing was changed."; }
                 }
             }
             catch (Exception ex)
             {
                 result = "Error: " + ex.Message; AppLog.Debug("exception while taking a build out: " + ex);
-                try { Radeon.Stop(); if (orig != null) { File.WriteAllBytes(Blb.Path, orig); Blb.BumpReload(); } } catch (Exception) { }
+                try { Radeon.Stop(); PutBack(orig, listOrig, listChanged); } catch (Exception) { }
             }
             finally
             {
@@ -2595,7 +2902,7 @@ namespace FiveMFrameCap
         // Puts the two cap values back to what they were before the last change this tool made.
         public string Revert(Build b, string wantMin, string wantMax)
         {
-            if (wantMin == NewMarker) return RemoveNew(b);
+            if (wantMin == NewMarker) return RemoveNew(b, wantMax != null && wantMax.EndsWith(ListMark));
             return Change(b, delegate(string name, string old, int len) { string t = name == "Chil_MinFRate" ? wantMin : wantMax; return Encoding.Unicode.GetByteCount(t) <= len ? t : null; },
                 delegate(Adl.ProfileValues v) { return v.Min == wantMin && v.Max == wantMax; },
                 "Cap put back to " + Val.First(wantMin) + " / " + Val.First(wantMax) + ".", "Nothing to undo: the cap is already back.", false);
@@ -7914,6 +8221,7 @@ namespace FiveMFrameCap
             new string[] { "Its status says it is not in Radeon Software yet. Apply the cap: this tool then adds it to Radeon Software itself.", "De status zegt dat hij nog niet in Radeon Software staat. Pas de limiet toe: dit programma voegt hem dan zelf toe aan Radeon Software.", "Der Status sagt, dass sie noch nicht in Radeon Software ist. Wenden Sie das Limit an: dieses Programm fügt sie dann selbst zu Radeon Software hinzu.", "Son état indique qu'elle n'est pas encore dans Radeon Software. Appliquez la limite : ce programme l'ajoute alors lui-même à Radeon Software.", "Su estado indica que aún no está en Radeon Software. Aplica el límite: este programa la añade entonces él mismo a Radeon Software." },
             new string[] { "Looking for a profile to copy ...", "Zoeken naar een profiel om te kopiëren ...", "Suche ein Profil zum Kopieren ...", "Recherche d'un profil à copier ...", "Buscando un perfil para copiar ..." },
             new string[] { "Making the profile in Radeon Software ...", "Het profiel maken in Radeon Software ...", "Das Profil in Radeon Software erstellen ...", "Création du profil dans Radeon Software ...", "Creando el perfil en Radeon Software ..." },
+            new string[] { "Putting the build in the list of games ...", "De build in de lijst met spellen zetten ...", "Den Build in die Spieleliste eintragen ...", "Ajout de la build à la liste des jeux ...", "Añadiendo la build a la lista de juegos ..." },
             new string[] { "Taking the profile out of Radeon Software ...", "Het profiel uit Radeon Software halen ...", "Das Profil aus Radeon Software entfernen ...", "Retrait du profil de Radeon Software ...", "Quitando el perfil de Radeon Software ..." },
             new string[] { "Put back {0} build(s): they are not in Radeon Software any more. Radeon Software was restarted.", "{0} build(s) teruggezet: ze staan niet meer in Radeon Software. Radeon Software is opnieuw gestart.", "{0} Build(s) zurückgesetzt: sie sind nicht mehr in Radeon Software. Radeon Software wurde neu gestartet.", "{0} build(s) rétablie(s) : elles ne sont plus dans Radeon Software. Radeon Software a été redémarré.", "{0} build(s) restaurada(s): ya no están en Radeon Software. Se reinició Radeon Software." },
             new string[] { "Network card", "Netwerkkaart", "Netzwerkkarte", "Carte réseau", "Tarjeta de red" },
@@ -9833,6 +10141,40 @@ namespace FiveMFrameCap
                     }
                     finally { CapMemory.PathOverride = null; try { File.Delete(capFile); } catch (Exception) { } }
 
+                    // Radeon Software's list of games (gmdb.blb): a fixture in the same form as the real file
+                    string[] gl = new string[] {
+                        "{", @"    'engines': [", "        {", @"            'engine_type': 1,", @"            'games_repository': 'e:\\Ubisoft\\\\games'", "        }", "    ],", @"    'games': [", "        {",
+                        @"            'amdId': -1,", @"            'averageFPS': 119.08970058250537,",
+                        @"            'exe_path': 'E:\\FiveM\\FiveM.app\\data\\cache\\subprocess\\FiveM_b1111_GTAProcess.exe',",
+                        @"            'guid': '{aaaaaaaa-0000-4000-8000-000000000001}',", @"            'hidden': 'TRUE',",
+                        @"            'image_info': 'E:\\FiveM\\FiveM.app\\data\\cache\\subprocess\\FiveM_b1111_GTAProcess.exe',", @"            'install_location': '',",
+                        @"            'last_played_mins': 7,", @"            'lastlaunchtime': 'Sun Nov 8 20:24:29 2026',", @"            'manual': 'TRUE',", @"            'steam_id': 99,",
+                        @"            'title': 'FiveM_b1111_GTAProcess',", @"            'total_played_mins': 70", "        },", "        {",
+                        @"            'exe_path': 'E:\\Other\\odd.exe',", @"            'guid': '{aaaaaaaa-0000-4000-8000-000000000002}',", @"            'hidden': 'FALSE',", @"            'manual': 'FALSE',",
+                        @"            'title': 'Odd \'} game {'", "        }", "    ],", @"    'lst_dtc_tsmp_high': 5", "}" };
+                    string glist = string.Join("\n", gl).Replace('\'', '"') + "\n";
+                    string exeOld = @"E:\FiveM\FiveM.app\data\cache\subprocess\FiveM_b1111_GTAProcess.exe", exeNew = @"E:\FiveM\FiveM.app\data\cache\subprocess\FiveM_b2222_GTAProcess.exe";
+                    string gw;
+                    ack(GameList.Count(glist) == 2, "the list holds 2 games, also with a brace and a quote in a title (" + GameList.Count(glist) + ")");
+                    ack(!GameList.IsVisible(glist, exeOld) && !GameList.IsVisible(glist, exeNew), "the removed build is not visible, the unknown one is not there");
+                    string gShow = GameList.Show(glist, exeOld.ToUpperInvariant(), "x", out gw);
+                    ack(gShow == glist.Replace("\"hidden\": \"TRUE\"", "\"hidden\": \"FALSE\""), "a removed build shows again and nothing else changes (" + gw + ")");
+                    ack(gShow != null && GameList.Show(gShow, exeOld, "x", out gw) == gShow, "a build that shows already is left alone (" + gw + ")");
+                    string gAdd = GameList.Show(glist, exeNew, "FiveM_b2222_GTAProcess", out gw);
+                    string gSuffix = "\n    ],\n    \"lst_dtc_tsmp_high\": 5\n}\n";
+                    ack(gAdd != null && GameList.Count(gAdd) == 3 && GameList.IsVisible(gAdd, exeNew), "a new build is added and shows (" + gw + ")");
+                    ack(gAdd != null && gAdd.EndsWith(gSuffix) && gAdd.StartsWith(glist.Substring(0, glist.Length - gSuffix.Length) + ",\n        {"), "the rest of the file is byte for byte the same");
+                    string gEntry = gAdd == null ? "" : GameList.EntryText(gAdd, exeNew) ?? "";
+                    ack(gEntry.Contains("\"title\": \"FiveM_b2222_GTAProcess\"") && gEntry.Contains("\"last_played_mins\": 0,") && gEntry.Contains("\"total_played_mins\": 0") && gEntry.Contains("\"hidden\": \"FALSE\"") && gEntry.Contains("\"steam_id\": -1,") && gEntry.Contains("\"image_info\": \"E:\\\\FiveM\\\\FiveM.app\\\\data\\\\cache\\\\subprocess\\\\FiveM_b2222_GTAProcess.exe\"") && !gEntry.Contains("b1111") && !gEntry.Contains("000000000001") && !gEntry.Contains("Nov 8"), "the new entry has the new exe, a new id, the name and the counters at zero");
+                    string gHide = gAdd == null ? null : GameList.Hide(gAdd, exeNew, out gw);
+                    ack(gHide != null && !GameList.IsVisible(gHide, exeNew) && GameList.Count(gHide) == 3 && GameList.Hide(gHide, exeNew, out gw) == gHide, "Undo hides the build like Radeon Software does, a second time changes nothing (" + gw + ")");
+                    ack(GameList.Hide(glist, @"E:\nowhere\x.exe", out gw) == glist, "hiding a build that is not in the list changes nothing (" + gw + ")");
+                    string gUni = @"E:\FiveM\" + "\u00dcn\u00ef" + @"\FiveM_b3333_GTAProcess.exe";
+                    string gU = GameList.Show(glist, gUni, "FiveM_b3333_GTAProcess", out gw);
+                    ack(gU != null && GameList.IsVisible(gU, gUni) && Encoding.UTF8.GetString(GameList.ToBytes(gU)).Contains("\u00dcn\u00ef"), "a path with accents is written as UTF-8 and found again");
+                    ack(GameList.Show("not json {", exeNew, "x", out gw) == null && GameList.Show("{ \"engines\": [] }", exeNew, "x", out gw) == null && GameList.Show("{ \"x\": { \"games\": [ { \"exe_path\": \"E:\\\\a.exe\", \"guid\": \"g\", \"hidden\": \"TRUE\", \"manual\": \"TRUE\", \"title\": \"t\" } ] } }", @"E:\a.exe", "x", out gw) == null, "a file that is not in the known form is refused (also a games list that is not on the top level)");
+                    ack(GameList.Show("{ \"games\": [] }", exeNew, "x", out gw) == null, "an empty list has nothing to copy, so it is refused (" + gw + ")");
+
                     if (args.Length >= 3 && args[2] == "live")
                     {
                         string tfile = "FiveMToolbox_TEST_b0002_GTAProcess.exe", tdir = @"D:\FiveMToolboxTest\sub";
@@ -9880,6 +10222,7 @@ namespace FiveMFrameCap
                                 string capFile2 = Path.Combine(Path.GetTempPath(), "fivemtoolbox-amdfull-" + Guid.NewGuid().ToString("N") + ".txt");
                                 CapMemory.PathOverride = capFile2;
                                 HashSet<string> bkBefore = new HashSet<string>();
+                                byte[] listBefore = File.Exists(GameList.FilePath) ? File.ReadAllBytes(GameList.FilePath) : null;
                                 if (Directory.Exists(Blb.BackupDir)) foreach (string f0 in Directory.GetFiles(Blb.BackupDir)) bkBefore.Add(f0);
                                 try
                                 {
@@ -9895,10 +10238,13 @@ namespace FiveMFrameCap
                                     ack(Radeon.Running(), "Radeon Software is running again after Apply");
                                     string[] fm = CapMemory.Get(fb.Exe);
                                     ack(fm != null && fm[0] == Worker.NewMarker, "the build is remembered as added by this tool");
+                                    ack(listBefore == null || GameList.VisibleInFile(fb.Exe), "the build shows in Radeon Software's list of games");
+                                    ack(listBefore == null || (fm != null && fm[1] == Worker.NewMarker + Worker.ListMark), "the memory says that the list was changed too");
                                     Worker uw = new Worker(); uw.Log = fw.Log;
                                     string ur = uw.Revert(fb, fm != null ? fm[0] : "", fm != null ? fm[1] : "");
                                     ack(ur != null && ur.StartsWith("Cap put back"), "Undo says: " + ur);
                                     ack(!Adl.Read(fb.FileName, fb.Dir).Found, "AMD no longer knows the build after Undo");
+                                    ack(!GameList.VisibleInFile(fb.Exe), "the build is hidden in the list of games after Undo");
                                     ack(CapMemory.Get(fb.Exe) == null, "the memory of the build is gone after Undo");
                                     ack(Radeon.Running(), "Radeon Software is running again after Undo");
                                     Worker uw2 = new Worker(); uw2.Log = fw.Log;
@@ -9908,7 +10254,7 @@ namespace FiveMFrameCap
                                 finally
                                 {
                                     CapMemory.PathOverride = null; try { File.Delete(capFile2); } catch (Exception) { }
-                                    try { Radeon.Stop(); File.WriteAllBytes(Blb.Path, orig); Blb.BumpReload(); Radeon.Start(); } catch (Exception) { }
+                                    try { Radeon.Stop(); File.WriteAllBytes(Blb.Path, orig); Blb.BumpReload(); if (listBefore != null) File.WriteAllBytes(GameList.FilePath, listBefore); Radeon.Start(); } catch (Exception) { }
                                     if (Directory.Exists(Blb.BackupDir)) foreach (string f1 in Directory.GetFiles(Blb.BackupDir)) if (!bkBefore.Contains(f1)) { try { File.Delete(f1); } catch (Exception) { } }
                                 }
                                 byte[] back2 = File.ReadAllBytes(Blb.Path);
