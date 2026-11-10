@@ -66,7 +66,7 @@ Go to **Releases** and download `FiveMToolbox.exe`. Double-click it.
 ## Graphics cards
 
 - **NVIDIA:** supported. No administrator rights were needed in the tests. If saving needs them, the program says so, and the shield button restarts it as administrator.
-- **AMD:** supported. The build must already be in Radeon Software (Gaming > Games) with Radeon Chill switched on once. Radeon Software closes and opens again during a change. The program changes profiles that Radeon Software already has: it cannot make a new one.
+- **AMD:** supported. Radeon Software closes and opens again during a change. A build that Radeon Software does not know yet is added by the program itself (through AMD's own library), copied from the profile of another build in Radeon Software that has Radeon Chill values. Undo takes it out again. If there is no profile to copy from, add one FiveM build in Radeon Software once (Gaming > Games) with Radeon Chill switched on.
 - **Intel Arc (a dedicated Intel card):** not supported at the moment, because the author could not test it. An Intel chip in the processor is not a problem.
 
 Developed and tested on Windows 11 with an AMD Radeon RX 9070 XT, an NVIDIA RTX 4060 laptop and an NVIDIA RTX 4080.

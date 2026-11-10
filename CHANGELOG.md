@@ -7,6 +7,8 @@ Tags: NEW, CHANGED, FIXED.
 
 ## v0.8.1 - 2026-11-10 (latest)
 
+**NEW** - **A build that Radeon Software does not know yet is added by the program (AMD).** *Before, the program said "Not in Radeon Software yet" and you had to add the build by hand in Radeon Software (Gaming > Games). Now Apply does it: it makes a profile for the build through AMD's own library (the library Radeon Software uses itself), copied from the profile of another FiveM build, with Radeon Chill on and your cap in both values. Radeon Software closes for a moment and opens again, like for every change, and the program checks that AMD shows the new value. Undo takes the build out of Radeon Software again. There must be one FiveM build in Radeon Software with Radeon Chill values to copy from; if there is none, the program still says to add one by hand. Tested on an AMD Radeon RX 9070 XT.*
+
 **CHANGED** - **A line in the log with a result has the colour as its background.** *Before, the text was coloured, and that was hard to see on the light theme. Now the line has a coloured background (green: good, yellow: a small problem, orange: a warning, red: an error, purple: something really broken) and the text keeps the normal colour. It is the same in the light and the dark theme, and the text is easy to read on every colour (checked by a self test).*
 
 **CHANGED** - **The log keeps a finished job open while you stay on the tab.** *Before, a job (for example the search when the program starts) was folded into one line at once. Now it stays open while you are on the tab where it happened, and it folds up when you change to another tab. A job you open or fold by hand stays as you left it, a job with a problem stays open, and the pop-out log folds a finished job at once, as before.*

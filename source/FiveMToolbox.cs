@@ -438,6 +438,21 @@ namespace FiveMFrameCap
         static extern int ADL2_ApplicationProfiles_ProfileOfAnApplicationX2_Search(IntPtr ctx, string file, string path, string version, string area, out IntPtr profile);
         [DllImport(D, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
         static extern int ADL2_ApplicationProfiles_Applications_Get(IntPtr ctx, string area, out int num, out IntPtr apps);
+        // the two calls Radeon Software makes itself to add a program (checked with a real before and after of its profile file): make a profile, then attach the program to it
+        [DllImport(D, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
+        static extern int ADL2_ApplicationProfiles_Profile_Create(IntPtr ctx, string area, string name, int num, IntPtr props);
+        [DllImport(D, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
+        static extern int ADL2_ApplicationProfiles_Profile_Remove(IntPtr ctx, string area, string name);
+        [DllImport(D, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
+        static extern int ADL2_ApplicationProfiles_ProfileApplication_Assign(IntPtr ctx, string file, string path, string version, string area, string profile);
+        [DllImport(D, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
+        static extern int ADL2_ApplicationProfiles_RemoveApplication(IntPtr ctx, string file, string path, string version, string area);
+
+        // ADLPropertyRecordCreate in adl_structures.h: the name first, then the type, then the value (the page of the SDK lists the fields in another order: that crashed)
+        [StructLayout(LayoutKind.Sequential)] struct PropCreate { public IntPtr Name; public int Type; public IntPtr Value; }
+        const int PropTypeString = 5;     // ADL_PROFILEPROPERTY_TYPE_STRING: the only type that worked; AMD stores the text as the same binary value Radeon Software writes itself (measured)
+        const string Area = "3D_User";
+        public class Prop { public string Name; public string Text; }
 
         public class ProfileValues { public bool Found; public int Rc; public string Pf = ""; public string Min = ""; public string Max = ""; }
         public class AppInfo { public int Index; public string File; public string Path; public string Profile; }
@@ -479,6 +494,163 @@ namespace FiveMFrameCap
             }
             finally { ADL2_Main_Control_Destroy(ctx); }
             return list;
+        }
+
+        // The pattern Radeon Software stores for the folder of a program: the folder and a star (E:\FiveM\FiveM.app\data\cache\subprocess*).
+        public static string Pattern(string dir) { return (dir ?? "").TrimEnd('\\') + "*"; }
+
+        // The text of a property value, or null when it is not plain text (empty, or a number stored as 4 bytes).
+        public static string TextOf(byte[] raw)
+        {
+            if (raw == null || raw.Length < 2 || raw.Length % 2 != 0) return null;
+            string s = Encoding.Unicode.GetString(raw);
+            foreach (char c in s) if (c < ' ' || c == '\uFFFD') return null;
+            return s;
+        }
+
+        // Every property of the profile of one program (the text ones have Text, the others have null).
+        public static List<Prop> ReadProps(string file, string dir)
+        {
+            List<Prop> list = new List<Prop>();
+            IntPtr ctx;
+            if (ADL2_Main_Control_Create(AllocCb, 1, out ctx) != 0) return list;
+            try
+            {
+                IntPtr p;
+                if (ADL2_ApplicationProfiles_ProfileOfAnApplicationX2_Search(ctx, file, dir, "", Area, out p) != 0 || p == IntPtr.Zero) return list;
+                int count = Marshal.ReadInt32(p, 0);
+                if (count <= 0 || count > 500) return list;
+                int off = 4;
+                for (int i = 0; i < count; i++)
+                {
+                    byte[] nb = new byte[64];
+                    Marshal.Copy(new IntPtr(p.ToInt64() + off), nb, 0, 64);
+                    string name = Encoding.ASCII.GetString(nb); int z = name.IndexOf('\0'); if (z >= 0) name = name.Substring(0, z);
+                    int size = Marshal.ReadInt32(p, off + 68);
+                    if (size < 0 || size > 8192) break;
+                    byte[] db = new byte[size];
+                    if (size > 0) Marshal.Copy(new IntPtr(p.ToInt64() + off + 72), db, 0, size);
+                    Prop pr = new Prop(); pr.Name = name; pr.Text = TextOf(db);
+                    list.Add(pr);
+                    off += 72 + size;
+                }
+            }
+            finally { ADL2_Main_Control_Destroy(ctx); }
+            return list;
+        }
+
+        static string TextOfProp(List<Prop> l, string name)
+        {
+            foreach (Prop p in l) if (p.Name == name) return p.Text;
+            return null;
+        }
+
+        // The three Radeon Chill properties, each with at least one "bus::value" pair.
+        public static bool HasChill(List<Prop> l)
+        {
+            foreach (string n in new string[] { "Chil_PFEnable", "Chil_MinFRate", "Chil_MaxFRate" })
+            {
+                string x = TextOfProp(l, n);
+                if (x == null || Val.Pairs(x).Count == 0) return false;
+            }
+            return true;
+        }
+
+        // A profile to copy from: another FiveM build first, then any program that has Radeon Chill values. null when there is none.
+        public static List<Prop> TemplateProps(out string from)
+        {
+            from = null;
+            List<AppInfo> apps = Apps();
+            List<AppInfo> order = new List<AppInfo>();
+            foreach (AppInfo a in apps) if (a.File != null && a.File.StartsWith("FiveM", StringComparison.OrdinalIgnoreCase)) order.Add(a);
+            foreach (AppInfo a in apps) if (!order.Contains(a)) order.Add(a);
+            int tried = 0;
+            foreach (AppInfo a in order)
+            {
+                if (tried++ >= 40) break;
+                if (string.IsNullOrEmpty(a.File) || string.IsNullOrEmpty(a.Path)) continue;
+                List<Prop> pr = ReadProps(a.File, a.Path.TrimEnd('*'));
+                if (HasChill(pr)) { from = a.File; return pr; }
+            }
+            return null;
+        }
+
+        // The properties of the new profile: the text properties of the template (the numbers stored as 4 bytes and the empty ones are left out: they are the defaults),
+        // with Radeon Chill on and the cap in both values. null when a Chill value has no pairs.
+        public static List<Prop> NewProps(List<Prop> template, int cap)
+        {
+            List<Prop> r = new List<Prop>();
+            foreach (Prop p in template)
+            {
+                if (p.Text == null) continue;
+                Prop n = new Prop(); n.Name = p.Name; n.Text = p.Text;
+                if (p.Name == "Chil_PFEnable") n.Text = Val.Make(p.Text, 1, int.MaxValue);
+                else if (p.Name == "Chil_MinFRate" || p.Name == "Chil_MaxFRate") n.Text = Val.Make(p.Text, cap, int.MaxValue);
+                if (n.Text == null) return null;
+                r.Add(n);
+            }
+            return r;
+        }
+
+        // Makes a profile for a program Radeon Software does not know yet and attaches the program to it (the same two calls Radeon Software makes itself; AMD's library
+        // writes the profile file). Returns null when it worked, else the reason. Radeon Software must be closed.
+        public static string AddProfile(string file, string dir, List<Prop> props, out string profileName)
+        {
+            profileName = "{" + Guid.NewGuid().ToString().ToLowerInvariant() + "}";
+            if (props == null || props.Count == 0) return "there are no properties for the new profile";
+            IntPtr ctx;
+            int rc = ADL2_Main_Control_Create(AllocCb, 1, out ctx);
+            if (rc != 0) return "AMD library error " + rc;
+            int sz = Marshal.SizeOf(typeof(PropCreate));
+            IntPtr arr = Marshal.AllocHGlobal(sz * props.Count);
+            List<IntPtr> strings = new List<IntPtr>();
+            try
+            {
+                for (int i = 0; i < props.Count; i++)
+                {
+                    PropCreate pc = new PropCreate(); pc.Type = PropTypeString;
+                    pc.Name = Marshal.StringToHGlobalUni(props[i].Name); strings.Add(pc.Name);
+                    pc.Value = Marshal.StringToHGlobalUni(props[i].Text); strings.Add(pc.Value);
+                    Marshal.StructureToPtr(pc, new IntPtr(arr.ToInt64() + (long)i * sz), false);
+                }
+                rc = ADL2_ApplicationProfiles_Profile_Create(ctx, Area, profileName, props.Count, arr);
+                if (rc != 0) return "AMD could not make the profile (code " + rc + ")";
+                rc = ADL2_ApplicationProfiles_ProfileApplication_Assign(ctx, file, Pattern(dir), "", Area, profileName);
+                if (rc != 0)
+                {
+                    int rb = ADL2_ApplicationProfiles_Profile_Remove(ctx, Area, profileName);
+                    return "AMD could not attach the program to the new profile (code " + rc + "; the new profile was taken out again, code " + rb + ")";
+                }
+                return null;
+            }
+            finally
+            {
+                foreach (IntPtr s in strings) Marshal.FreeHGlobal(s);
+                Marshal.FreeHGlobal(arr);
+                ADL2_Main_Control_Destroy(ctx);
+            }
+        }
+
+        // Takes a program out of Radeon Software again, and its profile too when no other program uses it. Returns null when it worked, else the reason. Radeon Software must be closed.
+        public static string RemoveProfile(string file, string dir)
+        {
+            string pattern = Pattern(dir), profile = null;
+            int users = 0;
+            List<AppInfo> apps = Apps();
+            foreach (AppInfo a in apps) if (string.Equals(a.File, file, StringComparison.OrdinalIgnoreCase) && string.Equals(a.Path, pattern, StringComparison.OrdinalIgnoreCase)) profile = a.Profile;
+            if (profile == null) return "this program is not in Radeon Software";
+            foreach (AppInfo a in apps) if (string.Equals(a.Profile, profile, StringComparison.OrdinalIgnoreCase)) users++;
+            IntPtr ctx;
+            int rc = ADL2_Main_Control_Create(AllocCb, 1, out ctx);
+            if (rc != 0) return "AMD library error " + rc;
+            try
+            {
+                rc = ADL2_ApplicationProfiles_RemoveApplication(ctx, file, pattern, "", Area);
+                if (rc != 0) return "AMD could not take the program out (code " + rc + ")";
+                if (users <= 1) ADL2_ApplicationProfiles_Profile_Remove(ctx, Area, profile);     // answers -15 when AMD already dropped the profile with its last program
+                return null;
+            }
+            finally { ADL2_Main_Control_Destroy(ctx); }
         }
 
         // Ask AMD for the Radeon Chill values of one exe.
@@ -2269,6 +2441,7 @@ namespace FiveMFrameCap
         public Action<string, double> Step;      // (what it is doing, how far 0..1 inside this build)
         bool backedUp = false;
         void S(string text, double sub) { if (Step != null) Step(text, sub); }
+        public const string NewMarker = "amd-new";   // saved as the "old cap" of a build that this tool added to Radeon Software: Undo takes it out again
 
         static string Md5(byte[] b)
         {
@@ -2310,9 +2483,110 @@ namespace FiveMFrameCap
             return false;
         }
 
+        // A build that Radeon Software does not know yet: this tool makes its profile (copied from another FiveM build, Radeon Chill on, the cap in both values) through AMD's own library.
+        string AddNew(Build b, int cap)
+        {
+            S("Looking for a profile to copy ...", 0.1);
+            string from;
+            List<Adl.Prop> template = Adl.TemplateProps(out from);
+            if (template == null) return "Not in Radeon Software yet. Add it there once (Gaming > Games) and turn Radeon Chill on. Then run again.";
+            List<Adl.Prop> props = Adl.NewProps(template, cap);
+            if (props == null) return "Not in Radeon Software yet. Add it there once (Gaming > Games) and turn Radeon Chill on. Then run again.";
+            Log("  " + b.FileName + " is not in Radeon Software yet. Making a profile for it through AMD's own library, copied from the profile of " + from + " (" + props.Count + " properties, Radeon Chill on, cap " + cap + ").");
+            if (Radeon.Running()) Radeon.Capture();
+            S("Closing Radeon Software ...", 0.25); Log("  Closing Radeon Software (it would write its old settings back otherwise) ...");
+            Radeon.Stop();
+            string result = null;
+            byte[] orig = null;
+            try
+            {
+                orig = File.ReadAllBytes(Blb.Path);
+                AppLog.Debug("profile file before: " + orig.Length + " bytes, md5 " + Md5(orig));
+                Backup(orig);
+                S("Making the profile in Radeon Software ...", 0.4);
+                string prof; string err = Adl.AddProfile(b.FileName, b.Dir, props, out prof);
+                if (err != null)
+                {
+                    result = "Could not add this build to Radeon Software: " + err + ". Nothing was changed.";
+                    File.WriteAllBytes(Blb.Path, orig); Blb.BumpReload();
+                }
+                else
+                {
+                    Log("  Made the profile " + prof + " and attached " + b.FileName + " to it.");
+                    Blb.BumpReload();
+                    S("Starting Radeon Software again ...", 0.65); Log("  Starting Radeon Software again ...");
+                    Radeon.Start();
+                    if (WaitFor(b, delegate(Adl.ProfileValues v) { return Val.First(v.Pf) == 1 && Val.First(v.Min) == cap && Val.First(v.Max) == cap; }))
+                    {
+                        result = "Set to " + cap + ".";
+                        CapMemory.Save(b.Exe, NewMarker, NewMarker);
+                        try { byte[] after = File.ReadAllBytes(Blb.Path); AppLog.Debug("profile file after: " + after.Length + " bytes, md5 " + Md5(after)); } catch (Exception) { }
+                    }
+                    else
+                    {
+                        S("Undoing ...", 0.9); Log("  AMD did not show the new profile, so it is taken out again (the old file is put back) ...");
+                        Radeon.Stop(); File.WriteAllBytes(Blb.Path, orig); Blb.BumpReload();
+                        result = "Could not confirm the new profile. Nothing was changed.";
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                result = "Error: " + ex.Message; AppLog.Debug("exception while adding a build: " + ex);
+                try { Radeon.Stop(); if (orig != null) { File.WriteAllBytes(Blb.Path, orig); Blb.BumpReload(); } } catch (Exception) { }
+            }
+            finally
+            {
+                if (!Radeon.Running()) { Log("  Starting Radeon Software again ..."); try { Radeon.Start(); } catch (Exception) { } }
+            }
+            return result;
+        }
+
+        // Undo for a build that this tool added: the build and its profile are taken out of Radeon Software again.
+        string RemoveNew(Build b)
+        {
+            if (!Adl.Read(b.FileName, b.Dir).Found) { CapMemory.Remove(b.Exe); return "Nothing to undo: the cap is already back."; }
+            if (Radeon.Running()) Radeon.Capture();
+            S("Closing Radeon Software ...", 0.25); Log("  Closing Radeon Software (it would write its old settings back otherwise) ...");
+            Radeon.Stop();
+            string result = null;
+            byte[] orig = null;
+            try
+            {
+                orig = File.ReadAllBytes(Blb.Path);
+                Backup(orig);
+                S("Taking the profile out of Radeon Software ...", 0.4);
+                string err = Adl.RemoveProfile(b.FileName, b.Dir);
+                if (err != null) { result = "Could not take this build out of Radeon Software: " + err + ". Nothing was changed."; File.WriteAllBytes(Blb.Path, orig); Blb.BumpReload(); }
+                else
+                {
+                    Blb.BumpReload();
+                    S("Starting Radeon Software again ...", 0.65); Log("  Starting Radeon Software again ...");
+                    Radeon.Start();
+                    Thread.Sleep(8000);
+                    bool gone = false;
+                    for (int i = 0; i < 12 && !gone; i++) { try { gone = !Adl.Read(b.FileName, b.Dir).Found; } catch (Exception) { } if (!gone) Thread.Sleep(3000); }
+                    if (gone) { result = "Cap put back: the build is not in Radeon Software any more."; CapMemory.Remove(b.Exe); }
+                    else { Radeon.Stop(); File.WriteAllBytes(Blb.Path, orig); Blb.BumpReload(); result = "Could not confirm that the build is out. Nothing was changed."; }
+                }
+            }
+            catch (Exception ex)
+            {
+                result = "Error: " + ex.Message; AppLog.Debug("exception while taking a build out: " + ex);
+                try { Radeon.Stop(); if (orig != null) { File.WriteAllBytes(Blb.Path, orig); Blb.BumpReload(); } } catch (Exception) { }
+            }
+            finally
+            {
+                if (!Radeon.Running()) { Log("  Starting Radeon Software again ..."); try { Radeon.Start(); } catch (Exception) { } }
+            }
+            return result;
+        }
+
         // Returns a one line result for the build.
         public string Apply(Build b, int cap)
         {
+            S("Asking AMD what is set now ...", 0.02);
+            if (!Adl.Read(b.FileName, b.Dir).Found) return AddNew(b, cap);
             return Change(b, delegate(string name, string old, int len) { return Val.Make(old, cap, len); },
                 delegate(Adl.ProfileValues v) { return Val.First(v.Min) == cap && Val.First(v.Max) == cap; },
                 "Set to " + cap + ".", "Already set to " + cap + ".", true);
@@ -2321,6 +2595,7 @@ namespace FiveMFrameCap
         // Puts the two cap values back to what they were before the last change this tool made.
         public string Revert(Build b, string wantMin, string wantMax)
         {
+            if (wantMin == NewMarker) return RemoveNew(b);
             return Change(b, delegate(string name, string old, int len) { string t = name == "Chil_MinFRate" ? wantMin : wantMax; return Encoding.Unicode.GetByteCount(t) <= len ? t : null; },
                 delegate(Adl.ProfileValues v) { return v.Min == wantMin && v.Max == wantMax; },
                 "Cap put back to " + Val.First(wantMin) + " / " + Val.First(wantMax) + ".", "Nothing to undo: the cap is already back.", false);
@@ -5873,7 +6148,7 @@ namespace FiveMFrameCap
                         {
                             List<string> nn = new List<string>();
                             foreach (Build nb in found) if (Finder.LastNew.Contains(nb.Exe)) nn.Add(nb.FileName);
-                            JobDone("info", Loc.T("New FiveM build found"), string.Join(", ", nn.ToArray()) + (needRadeon ? "   " + Loc.T("Its status says it is not in Radeon Software yet. Add it there once (Gaming > Games), then press Search again.") : ""));
+                            JobDone("info", Loc.T("New FiveM build found"), string.Join(", ", nn.ToArray()) + (needRadeon ? "   " + Loc.T("Its status says it is not in Radeon Software yet. Apply the cap: this tool then adds it to Radeon Software itself.") : ""));
                         }
                         else
                         {
@@ -6069,8 +6344,11 @@ namespace FiveMFrameCap
                         if (kind == 1)
                         {
                             nBack++;
-                            string bt = Val.First(before[0]) == Val.First(before[1]) ? Val.First(before[0]).ToString() : Val.First(before[0]) + " / " + Val.First(before[1]);
-                            if (!backTo.Contains(bt)) backTo.Add(bt);
+                            if (before[0] != Worker.NewMarker)
+                            {
+                                string bt = Val.First(before[0]) == Val.First(before[1]) ? Val.First(before[0]).ToString() : Val.First(before[0]) + " / " + Val.First(before[1]);
+                                if (!backTo.Contains(bt)) backTo.Add(bt);
+                            }
                         }
                         else if (kind == 2) { nAlready++; CapMemory.Remove(b.Exe); }
                         else { nBad++; if (firstBad == null) { firstBad = res; firstBadName = b.FileName; } }
@@ -6083,7 +6361,7 @@ namespace FiveMFrameCap
                     reported = true;
                     if (nBad > 0) JobDone("bad", Loc.T("Not everything worked"), firstBadName + ": " + Loc.TS(firstBad));
                     else if (nBack == 0) JobDone("info", Loc.T("Nothing to undo"), string.Format(Loc.T("The cap was already back for {0} build(s)."), nAlready));
-                    else JobDone("ok", Loc.T("Cap put back"), mode == "nvidia" ? string.Format(Loc.T("Put back {0} build(s). The NVIDIA driver profile was changed back."), nBack) : string.Format(Loc.T("Put back {0} build(s) to {1} FPS. Radeon Software was restarted."), nBack, string.Join("  ", backTo.ToArray())));
+                    else JobDone("ok", Loc.T("Cap put back"), mode == "nvidia" ? string.Format(Loc.T("Put back {0} build(s). The NVIDIA driver profile was changed back."), nBack) : backTo.Count == 0 ? string.Format(Loc.T("Put back {0} build(s): they are not in Radeon Software any more. Radeon Software was restarted."), nBack) : string.Format(Loc.T("Put back {0} build(s) to {1} FPS. Radeon Software was restarted."), nBack, string.Join("  ", backTo.ToArray())));
                 }
                 catch (Exception ex)
                 {
@@ -7633,7 +7911,11 @@ namespace FiveMFrameCap
             new string[] { "Cap put back to {0} / {1}.", "Limiet teruggezet naar {0} / {1}.", "Limit auf {0} / {1} zurückgesetzt.", "Limite rétablie à {0} / {1}.", "Límite restaurado a {0} / {1}." },
             new string[] { "Put back {0} build(s) to {1} FPS. Radeon Software was restarted.", "{0} build(s) teruggezet naar {1} FPS. Radeon Software is opnieuw gestart.", "{0} Build(s) auf {1} FPS zurückgesetzt. Radeon Software wurde neu gestartet.", "{0} build(s) rétablie(s) à {1} FPS. Radeon Software a été redémarré.", "{0} build(s) restaurada(s) a {1} FPS. Se reinició Radeon Software." },
             new string[] { "New FiveM build found", "Nieuwe FiveM-build gevonden", "Neue FiveM-Build gefunden", "Nouvelle build FiveM trouvée", "Nueva build de FiveM encontrada" },
-            new string[] { "Its status says it is not in Radeon Software yet. Add it there once (Gaming > Games), then press Search again.", "De status zegt dat hij nog niet in Radeon Software staat. Voeg hem daar één keer toe (Gaming > Games) en druk daarna op Opnieuw zoeken.", "Der Status sagt, dass sie noch nicht in Radeon Software ist. Fügen Sie sie dort einmal hinzu (Gaming > Games) und drücken Sie dann Erneut suchen.", "Son état indique qu'elle n'est pas encore dans Radeon Software. Ajoutez-la une fois là-bas (Gaming > Games), puis appuyez sur Rechercher à nouveau.", "Su estado indica que aún no está en Radeon Software. Añádela allí una vez (Gaming > Games) y luego pulsa Buscar de nuevo." },
+            new string[] { "Its status says it is not in Radeon Software yet. Apply the cap: this tool then adds it to Radeon Software itself.", "De status zegt dat hij nog niet in Radeon Software staat. Pas de limiet toe: dit programma voegt hem dan zelf toe aan Radeon Software.", "Der Status sagt, dass sie noch nicht in Radeon Software ist. Wenden Sie das Limit an: dieses Programm fügt sie dann selbst zu Radeon Software hinzu.", "Son état indique qu'elle n'est pas encore dans Radeon Software. Appliquez la limite : ce programme l'ajoute alors lui-même à Radeon Software.", "Su estado indica que aún no está en Radeon Software. Aplica el límite: este programa la añade entonces él mismo a Radeon Software." },
+            new string[] { "Looking for a profile to copy ...", "Zoeken naar een profiel om te kopiëren ...", "Suche ein Profil zum Kopieren ...", "Recherche d'un profil à copier ...", "Buscando un perfil para copiar ..." },
+            new string[] { "Making the profile in Radeon Software ...", "Het profiel maken in Radeon Software ...", "Das Profil in Radeon Software erstellen ...", "Création du profil dans Radeon Software ...", "Creando el perfil en Radeon Software ..." },
+            new string[] { "Taking the profile out of Radeon Software ...", "Het profiel uit Radeon Software halen ...", "Das Profil aus Radeon Software entfernen ...", "Retrait du profil de Radeon Software ...", "Quitando el perfil de Radeon Software ..." },
+            new string[] { "Put back {0} build(s): they are not in Radeon Software any more. Radeon Software was restarted.", "{0} build(s) teruggezet: ze staan niet meer in Radeon Software. Radeon Software is opnieuw gestart.", "{0} Build(s) zurückgesetzt: sie sind nicht mehr in Radeon Software. Radeon Software wurde neu gestartet.", "{0} build(s) rétablie(s) : elles ne sont plus dans Radeon Software. Radeon Software a été redémarré.", "{0} build(s) restaurada(s): ya no están en Radeon Software. Se reinició Radeon Software." },
             new string[] { "Network card", "Netwerkkaart", "Netzwerkkarte", "Carte réseau", "Tarjeta de red" },
             new string[] { "Speed", "Snelheid", "Geschwindigkeit", "Vitesse", "Velocidad" },
             new string[] { "Windows holds {0} names in the DNS cache right now.\r\n\r\nClear them?", "Windows heeft nu {0} namen in de DNS-cache.\r\n\r\nWissen?", "Windows hat gerade {0} Namen im DNS-Cache.\r\n\r\nLöschen?", "Windows garde actuellement {0} noms dans le cache DNS.\r\n\r\nLes vider ?", "Windows tiene ahora {0} nombres en la caché DNS.\r\n\r\n¿Borrarlos?" },
@@ -9440,7 +9722,7 @@ namespace FiveMFrameCap
                 if (Directory.Exists(oldDir) && !Directory.Exists(newDir)) Directory.Move(oldDir, newDir);
             }
             catch (Exception) { }
-            bool isShot = args.Length >= 2 && (args[0] == "--shot" || args[0] == "--log-color-test" || args[0] == "--reset-ui-test" || args[0] == "--reset-form-test" || args[0] == "--dpi-test" || args[0] == "--pure-icon-test" || args[0] == "--log-fold-test");
+            bool isShot = args.Length >= 2 && (args[0] == "--shot" || args[0] == "--amd-add-test" || args[0] == "--log-color-test" || args[0] == "--reset-ui-test" || args[0] == "--reset-form-test" || args[0] == "--dpi-test" || args[0] == "--pure-icon-test" || args[0] == "--log-fold-test");
             bool relaunched = false;
             foreach (string a0 in args) if (a0 == "--page" || a0 == "--relaunch") relaunched = true;
             if (!isShot)
@@ -9515,6 +9797,131 @@ namespace FiveMFrameCap
                 catch (Exception uex) { us.AppendLine("EXCEPTION " + uex); }
                 File.WriteAllText(args[4].Replace(".png", ".txt"), us.ToString());
                 return 0;
+            }
+            if (args.Length >= 2 && args[0] == "--amd-add-test")
+            {
+                // --amd-add-test <outfile> [live]: adding a build that Radeon Software does not know, and taking it out again.
+                // Without "live" only the parts that need no AMD library are tested. With "live" a made-up program is added to the REAL profile file and taken out again,
+                // with Radeon Software closed and the old file put back at the end (the file is backed up first).
+                StringBuilder asb = new StringBuilder();
+                int afail = 0;
+                Action<bool, string> ack = delegate(bool good, string what) { if (!good) afail++; asb.AppendLine((good ? "PASS  " : "FAIL  ") + what); };
+                try
+                {
+                    ack(Adl.TextOf(Encoding.Unicode.GetBytes("0x0300::1;;")) == "0x0300::1;;", "a value that is text is text");
+                    ack(Adl.TextOf(new byte[] { 0, 0, 0, 0 }) == null && Adl.TextOf(new byte[0]) == null && Adl.TextOf(new byte[] { 10, 0, 0, 0 }) == null && Adl.TextOf(new byte[] { 49, 0, 50 }) == null, "four zero bytes, nothing, a number and an odd length are not text");
+                    ack(Adl.Pattern(@"E:\FiveM\FiveM.app\data\cache\subprocess") == @"E:\FiveM\FiveM.app\data\cache\subprocess*" && Adl.Pattern(@"E:\FiveM\") == @"E:\FiveM*", "the folder pattern is the folder and a star, like Radeon Software writes it");
+                    List<Adl.Prop> tpl = new List<Adl.Prop>();
+                    string[][] tp = new string[][] { new string[] { "Chil_PFEnable", "0x0300::0;;0x0e00::0;;" }, new string[] { "Chil_MinFRate", "0x0300::75;;0x0e00::75;;" }, new string[] { "Chil_MaxFRate", "0x0300::120;;0x0e00::120;;" }, new string[] { "Chil_Level", "0x0300::2;;0x0e00::2;;" }, new string[] { "Empty_One", null }, new string[] { "CFM", "1" } };
+                    foreach (string[] x in tp) { Adl.Prop pp = new Adl.Prop(); pp.Name = x[0]; pp.Text = x[1]; tpl.Add(pp); }
+                    ack(Adl.HasChill(tpl), "a template with the three Chill values is usable");
+                    List<Adl.Prop> np = Adl.NewProps(tpl, 140);
+                    Func<List<Adl.Prop>, string, string> val = delegate(List<Adl.Prop> l, string n) { foreach (Adl.Prop q in l) if (q.Name == n) return q.Text; return "(missing)"; };
+                    ack(np != null && np.Count == 5, "the new profile has the text properties of the template and not the empty one (" + (np != null ? np.Count.ToString() : "null") + " of 6)");
+                    ack(np != null && val(np, "Chil_PFEnable") == "0x0300::1;;0x0e00::1;;", "Radeon Chill is on in the new profile (" + (np != null ? val(np, "Chil_PFEnable") : "") + ")");
+                    ack(np != null && val(np, "Chil_MinFRate") == "0x0300::140;;0x0e00::140;;" && val(np, "Chil_MaxFRate") == "0x0300::140;;0x0e00::140;;", "the cap is in both values, for both chips");
+                    ack(np != null && val(np, "Chil_Level") == "0x0300::2;;0x0e00::2;;" && val(np, "CFM") == "1" && val(np, "Empty_One") == "(missing)", "the other values are copied as they are");
+                    tpl[1].Text = "nothing";
+                    ack(!Adl.HasChill(tpl) && Adl.NewProps(tpl, 140) == null, "a template whose Chill value has no pairs is refused");
+                    string capFile = Path.Combine(Path.GetTempPath(), "fivemtoolbox-amdadd-" + Guid.NewGuid().ToString("N") + ".txt");
+                    CapMemory.PathOverride = capFile;
+                    try
+                    {
+                        CapMemory.Save(@"C:\x\FiveM_b9_GTAProcess.exe", Worker.NewMarker, Worker.NewMarker);
+                        string[] mem = CapMemory.Get(@"C:\x\FiveM_b9_GTAProcess.exe");
+                        ack(mem != null && mem[0] == Worker.NewMarker && mem[1] == Worker.NewMarker, "Undo remembers that the build was added by this tool");
+                    }
+                    finally { CapMemory.PathOverride = null; try { File.Delete(capFile); } catch (Exception) { } }
+
+                    if (args.Length >= 3 && args[2] == "live")
+                    {
+                        string tfile = "FiveMToolbox_TEST_b0002_GTAProcess.exe", tdir = @"D:\FiveMToolboxTest\sub";
+                        asb.AppendLine("        (live: Radeon Software is closed for a moment, the real profile file is backed up and put back)");
+                        if (!File.Exists(Blb.Path)) ack(false, "the Radeon profile file is there");
+                        else
+                        {
+                            byte[] orig = File.ReadAllBytes(Blb.Path);
+                            string bk = Path.Combine(Path.GetTempPath(), "User.blb.amdaddtest-" + DateTime.Now.ToString("yyyyMMdd-HHmmss"));
+                            File.WriteAllBytes(bk, orig);
+                            if (Radeon.Running()) Radeon.Capture();
+                            Radeon.Stop();
+                            try
+                            {
+                                string from; List<Adl.Prop> tmpl = Adl.TemplateProps(out from);
+                                ack(tmpl != null, "a profile to copy is found (" + from + ")");
+                                if (tmpl != null)
+                                {
+                                    ack(Adl.Read(tfile, tdir).Found == false, "the made-up program is not in Radeon Software before");
+                                    string prof; string err = Adl.AddProfile(tfile, tdir, Adl.NewProps(tmpl, 100), out prof);
+                                    ack(err == null, "AMD makes the profile and attaches the program (" + (err ?? prof) + ")");
+                                    Adl.ProfileValues pv = Adl.Read(tfile, tdir);
+                                    ack(pv.Found && Val.First(pv.Pf) == 1 && Val.First(pv.Min) == 100 && Val.First(pv.Max) == 100, "AMD then reports Radeon Chill on and the cap 100 / 100 (found " + pv.Found + ", pf " + pv.Pf + ", min " + pv.Min + ", max " + pv.Max + ")");
+                                    int copied = 0; foreach (Adl.Prop q in Adl.ReadProps(tfile, tdir)) if (q.Text != null) copied++;
+                                    ack(copied >= 3, "the new profile holds the copied properties (" + copied + ")");
+                                    string rem = Adl.RemoveProfile(tfile, tdir);
+                                    ack(rem == null, "taking it out again works (" + (rem ?? "ok") + ")");
+                                    ack(!Adl.Read(tfile, tdir).Found, "AMD no longer knows the made-up program");
+                                    bool leftover = false; foreach (Adl.AppInfo ai in Adl.Apps()) if (ai.File != null && ai.File.IndexOf("_TEST_", StringComparison.OrdinalIgnoreCase) >= 0) leftover = true;
+                                    ack(!leftover, "no made-up entry is left in the list of programs");
+                                }
+                            }
+                            finally
+                            {
+                                File.WriteAllBytes(Blb.Path, orig);
+                                Blb.BumpReload();
+                                try { Radeon.Start(); } catch (Exception) { }
+                            }
+                            byte[] back = File.ReadAllBytes(Blb.Path);
+                            ack(back.Length == orig.Length, "the old profile file is back (" + back.Length + " bytes)");
+                            if (args.Length >= 4 && args[3] == "full")
+                            {
+                                // the whole way through the real Apply and Undo code, with Radeon Software closed and started by the worker itself
+                                asb.AppendLine("        (full: Apply and Undo of a made-up build, Radeon Software is restarted twice)");
+                                string capFile2 = Path.Combine(Path.GetTempPath(), "fivemtoolbox-amdfull-" + Guid.NewGuid().ToString("N") + ".txt");
+                                CapMemory.PathOverride = capFile2;
+                                HashSet<string> bkBefore = new HashSet<string>();
+                                if (Directory.Exists(Blb.BackupDir)) foreach (string f0 in Directory.GetFiles(Blb.BackupDir)) bkBefore.Add(f0);
+                                try
+                                {
+                                    for (int w8 = 0; w8 < 20 && !Radeon.Running(); w8++) Thread.Sleep(1000);
+                                    Thread.Sleep(6000);
+                                    Build fb = new Build(); fb.FileName = "FiveMToolbox_TEST_b0003_GTAProcess.exe"; fb.Dir = @"D:\FiveMToolboxTest\sub"; fb.Exe = Path.Combine(fb.Dir, fb.FileName);
+                                    Worker fw = new Worker(); fw.Log = delegate(string s) { asb.AppendLine("        log: " + s); };
+                                    ack(Radeon.Running(), "Radeon Software is running before Apply");
+                                    string ar = fw.Apply(fb, 100);
+                                    ack(ar == "Set to 100.", "Apply says: " + ar);
+                                    Adl.ProfileValues fv = Adl.Read(fb.FileName, fb.Dir);
+                                    ack(fv.Found && Val.First(fv.Pf) == 1 && Val.First(fv.Min) == 100 && Val.First(fv.Max) == 100, "AMD reports the new build with the cap 100 (" + fv.Min + ")");
+                                    ack(Radeon.Running(), "Radeon Software is running again after Apply");
+                                    string[] fm = CapMemory.Get(fb.Exe);
+                                    ack(fm != null && fm[0] == Worker.NewMarker, "the build is remembered as added by this tool");
+                                    Worker uw = new Worker(); uw.Log = fw.Log;
+                                    string ur = uw.Revert(fb, fm != null ? fm[0] : "", fm != null ? fm[1] : "");
+                                    ack(ur != null && ur.StartsWith("Cap put back"), "Undo says: " + ur);
+                                    ack(!Adl.Read(fb.FileName, fb.Dir).Found, "AMD no longer knows the build after Undo");
+                                    ack(CapMemory.Get(fb.Exe) == null, "the memory of the build is gone after Undo");
+                                    ack(Radeon.Running(), "Radeon Software is running again after Undo");
+                                    Worker uw2 = new Worker(); uw2.Log = fw.Log;
+                                    string ur2 = uw2.Revert(fb, Worker.NewMarker, Worker.NewMarker);
+                                    ack(ur2 != null && ur2.StartsWith("Nothing to undo"), "a second Undo says: " + ur2);
+                                }
+                                finally
+                                {
+                                    CapMemory.PathOverride = null; try { File.Delete(capFile2); } catch (Exception) { }
+                                    try { Radeon.Stop(); File.WriteAllBytes(Blb.Path, orig); Blb.BumpReload(); Radeon.Start(); } catch (Exception) { }
+                                    if (Directory.Exists(Blb.BackupDir)) foreach (string f1 in Directory.GetFiles(Blb.BackupDir)) if (!bkBefore.Contains(f1)) { try { File.Delete(f1); } catch (Exception) { } }
+                                }
+                                byte[] back2 = File.ReadAllBytes(Blb.Path);
+                                ack(back2.Length == orig.Length, "the old profile file is back after the full test (" + back2.Length + " bytes)");
+                            }
+                            try { File.Delete(bk); } catch (Exception) { }
+                        }
+                    }
+                }
+                catch (Exception aex) { afail++; asb.AppendLine("FAIL  EXCEPTION " + aex); }
+                asb.AppendLine(afail == 0 ? "ALL PASSED" : "FAILED: " + afail);
+                File.WriteAllText(args[1], asb.ToString());
+                return afail == 0 ? 0 : 1;
             }
             if (args.Length >= 2 && args[0] == "--log-color-test")
             {
