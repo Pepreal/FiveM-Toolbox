@@ -1,22 +1,16 @@
-# built program
-app/
-*.exe
-*.pdb
-
-# logs, settings and backups the program writes
-*-log.txt
-settings.txt
-backup/
-gpupref-*.txt
-
-# test and scratch output
-*.blb
-results/
-testbuild/
-_release/
-
-# editors and Windows
-.vs/
-*.user
-Thumbs.db
-desktop.ini
+# This folder is the whole project: private notes, test builds, backups, samples and so on.
+# Only the files named below ever go to GitHub. Everything else is ignored, so a new file
+# can never be uploaded by mistake. To publish a new file, add a line here first.
+/*
+!/.gitattributes
+!/.gitignore
+!/CHANGELOG.md
+!/LICENSE
+!/README.md
+!/source/
+/source/*
+!/source/FiveMToolbox.cs
+!/source/app.ico
+!/source/build.ps1
+!/source/build-and-run.bat
+!/source/make-icon.ps1
