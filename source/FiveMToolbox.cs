@@ -6290,9 +6290,14 @@ namespace FiveMFrameCap
             logPanel.ReportCopied += delegate { activity.Finish("ok", Loc.T("Report copied"), Loc.T("The whole log is on your clipboard. Paste it in a message. It has file paths and your PC's name in it.")); };
             footer.Controls.Add(logPanel);
             statusBar = new Panel(); statusBar.Dock = DockStyle.Bottom; statusBar.Height = 30; statusBar.Tag = "body";
-            copyLabel = new Label(); copyLabel.Text = Ico.Copyright + " " + Info.Year + " " + Info.Owner + "      " + Info.AppName + " " + Info.Version; copyLabel.Tag = "muted"; copyLabel.AutoSize = true; copyLabel.Left = 0; copyLabel.Top = 7;
+            // the credit on the right ("v0.8.1      Made by: Pepreal 2026", like the FiveM Server Manager), the link to the start window on the left
+            copyLabel = new Label(); copyLabel.Text = "v" + Info.Version + "      " + Loc.T("Made by:") + " " + Info.Owner + " " + Info.Year; copyLabel.Tag = "muted"; copyLabel.AutoSize = false; copyLabel.Dock = DockStyle.Right; copyLabel.TextAlign = ContentAlignment.MiddleRight;
             statusBar.Controls.Add(copyLabel);
-            startLink = new LinkLabel(); startLink.Text = Loc.T("Show the start window next time"); startLink.Dock = DockStyle.Right; startLink.Width = 340; startLink.TextAlign = ContentAlignment.MiddleRight;
+            // docked on the right like the link is docked on the left: the same height, and the text in the middle of the bar in the same way. As wide as its text.
+            // (A label with AutoSize is only as high as its text and sticks to the top of the bar, that is the height difference the user saw.)
+            Action sizeCredit = delegate { copyLabel.Width = TextRenderer.MeasureText(copyLabel.Text, copyLabel.Font, new Size(int.MaxValue, int.MaxValue), TextFormatFlags.NoPadding).Width + 8; };
+            sizeCredit(); statusBar.SizeChanged += delegate { sizeCredit(); }; copyLabel.FontChanged += delegate { sizeCredit(); };
+            startLink = new LinkLabel(); startLink.Text = Loc.T("Show the start window next time"); startLink.Dock = DockStyle.Left; startLink.Width = 340; startLink.TextAlign = ContentAlignment.MiddleLeft;
             startLink.LinkClicked += delegate { Settings.Set("startpage", "ask"); Log("The start window will show next time."); };
             statusBar.Controls.Add(startLink);
             footer.Controls.Add(statusBar);
@@ -7810,6 +7815,8 @@ namespace FiveMFrameCap
         // The window cannot be closed while a job changes something: Radeon Software would stay closed, a file would stay half written. A search only reads, so it may be closed.
         public static bool TestQuiet = false;   // for --review-test: no message box
         public bool TestBusy(bool on, bool scan) { readOnlyJob = scan; busy = on; return busy; }
+        // for --review-test: where the two parts of the footer are (link left, right, credit left, right, width of the bar, middle height of the link, middle height of the credit)
+        public int[] TestFooterPlaces(out string credit) { credit = copyLabel.Text; return new int[] { startLink.Left, startLink.Right, copyLabel.Left, copyLabel.Right, statusBar.ClientSize.Width, startLink.Top + startLink.Height / 2, copyLabel.Top + copyLabel.Height / 2 }; }
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             if (busy && !readOnlyJob && e.CloseReason == CloseReason.UserClosing)
@@ -8341,6 +8348,7 @@ namespace FiveMFrameCap
             new string[] { "The AMD library is not ready (Radeon Software may be starting). Nothing was changed. Try again in a moment.", "De AMD-bibliotheek is nog niet klaar (Radeon Software start misschien nog op). Er is niets veranderd. Probeer het zo meteen opnieuw.", "Die AMD-Bibliothek ist noch nicht bereit (Radeon Software startet vielleicht noch). Es wurde nichts geändert. Versuche es gleich noch einmal.", "La bibliothèque AMD n'est pas prête (Radeon Software démarre peut-être encore). Rien n'a été modifié. Réessaie dans un instant.", "La biblioteca de AMD no está lista (puede que Radeon Software esté arrancando). No se cambió nada. Inténtalo de nuevo en un momento." },
             new string[] { "Undo skipped: the old value was saved for another graphics driver. Nothing was changed.", "Ongedaan maken overgeslagen: de oude waarde is voor een ander grafisch stuurprogramma bewaard. Er is niets veranderd.", "Rückgängig übersprungen: Der alte Wert wurde für einen anderen Grafiktreiber gespeichert. Es wurde nichts geändert.", "Annulation ignorée : l'ancienne valeur a été enregistrée pour un autre pilote graphique. Rien n'a été modifié.", "Deshacer omitido: el valor anterior se guardó para otro controlador gráfico. No se cambió nada." },
             new string[] { "A job is still running. Wait until it has finished, then close the window.", "Er loopt nog een taak. Wacht tot die klaar is en sluit dan het venster.", "Es läuft noch eine Aufgabe. Warte, bis sie fertig ist, und schließe dann das Fenster.", "Une tâche est encore en cours. Attends qu'elle soit terminée, puis ferme la fenêtre.", "Todavía hay una tarea en curso. Espera a que termine y luego cierra la ventana." },
+            new string[] { "Made by:", "Gemaakt door:", "Erstellt von:", "Créé par :", "Hecho por:" },
             new string[] { "Put back {0} build(s): they are not in Radeon Software any more. Radeon Software was restarted.", "{0} build(s) teruggezet: ze staan niet meer in Radeon Software. Radeon Software is opnieuw gestart.", "{0} Build(s) zurückgesetzt: sie sind nicht mehr in Radeon Software. Radeon Software wurde neu gestartet.", "{0} build(s) rétablie(s) : elles ne sont plus dans Radeon Software. Radeon Software a été redémarré.", "{0} build(s) restaurada(s): ya no están en Radeon Software. Se reinició Radeon Software." },
             new string[] { "Network card", "Netwerkkaart", "Netzwerkkarte", "Carte réseau", "Tarjeta de red" },
             new string[] { "Speed", "Snelheid", "Geschwindigkeit", "Vitesse", "Velocidad" },
@@ -10588,6 +10596,10 @@ namespace FiveMFrameCap
                     DateTime cfEnd = DateTime.UtcNow.AddSeconds(40);
                     while (DateTime.UtcNow < cfEnd && (cf.IsBusy || DateTime.UtcNow < cfEnd.AddSeconds(-34))) { Application.DoEvents(); Thread.Sleep(40); }
                     rck(!cf.IsBusy, "the main window finished its first search");
+                    string fcredit; int[] fpl = cf.TestFooterPlaces(out fcredit);
+                    rck(fcredit == "v" + Info.Version + "      Made by: " + Info.Owner + " " + Info.Year, "the footer credit reads like the one of the FiveM Server Manager: " + fcredit);
+                    rck(fpl[0] <= 1 && fpl[1] < fpl[2] && fpl[4] - fpl[3] <= 2, "the link to the start window is on the left and the credit on the right (link " + fpl[0] + "-" + fpl[1] + ", credit " + fpl[2] + "-" + fpl[3] + " of " + fpl[4] + ")");
+                    rck(Math.Abs(fpl[5] - fpl[6]) <= 1, "the credit is on the same height as the link (middle of the link " + fpl[5] + ", middle of the credit " + fpl[6] + ")");
                     cf.TestBusy(true, false); cf.Close();
                     rck(!cf.IsDisposed, "the window does not close while a job that changes something runs");
                     cf.TestBusy(true, true); cf.Close(); rpump();
