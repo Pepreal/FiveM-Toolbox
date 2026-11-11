@@ -55,13 +55,14 @@ The window is in English, Dutch, German, French and Spanish. It follows the Wind
 
 ## Download
 
-Go to **Releases** and download `FiveMToolbox.exe`. Double-click it.
+Go to **Releases** and download the zip (`FiveMToolbox-<version>.zip`). Unzip it into a folder of your own, and double-click `FiveMToolbox.exe` in that folder.
 
 - Windows 10 or 11, 64 bit.
+- The program makes a folder `backup` and a log file `FiveMToolbox.log` next to the exe, so unzip it in a folder you can write to (not in Program Files). To update, unzip the new version over the old folder: your backups and your log stay.
 - Nothing to install. The .NET Framework that it needs is part of Windows.
 - The text is sharp on screens with scaling (125 %, 150 %). If it looks wrong on your PC, start the program with `--no-dpi`.
 - Windows may say "Windows protected your PC", because the file is not signed. Click "More info", then "Run anyway".
-- If you do not want to trust a ready-made file, build it yourself (see below), or compare its SHA-256 with the one on the release page.
+- If you do not want to trust a ready-made file, build it yourself (see below), or compare the SHA-256 of `FiveMToolbox.exe` with the one on the release page.
 
 ## Graphics cards
 
