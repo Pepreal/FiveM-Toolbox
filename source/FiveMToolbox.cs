@@ -84,7 +84,7 @@ namespace FiveMFrameCap
                     if (path != null) return path;
                     string[] tries = new string[] {
                         Path.Combine(AppDomain.CurrentDomain.BaseDirectory, Info.ExeName + "-log.txt"),
-                        Path.Combine(Path.GetDirectoryName(Blb.BackupDir), "log.txt") };
+                        Path.Combine(Info.DataDir, "log.txt") };
                     foreach (string t in tries)
                     {
                         try
@@ -389,6 +389,10 @@ namespace FiveMFrameCap
         // The numbers are the page numbers and stay as they are (0 frame cap, 1 DNS tools, 2 FiveM cache, 3 graphics), because the settings file ("startpage") and "--page N" use them.
         public static readonly int[] PageOrder = new int[] { 2, 0, 1, 3 };
         public static int FirstPage { get { return PageOrder[0]; } }
+
+        // The small state files (the Undo memory, the lists of builds, the graphics preference memory, settings.txt): %LOCALAPPDATA%\FiveMToolbox.
+        // The backups have a folder of their own (Blb.BackupDir).
+        public static string DataDir { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), Folder); } }
 
         [DllImport("shell32.dll", CharSet = CharSet.Unicode)] static extern uint ExtractIconEx(string file, int index, IntPtr[] large, IntPtr[] small, uint count);
         [DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr handle);
@@ -780,9 +784,13 @@ namespace FiveMFrameCap
         {
             get { return System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"ATI\ACE\APL\User.blb"); }
         }
+        // Every backup (Radeon's profile file, Radeon's list of games, the NVIDIA driver database, FiveM's settings files, the data of a removed Windows list entry) goes in a folder
+        // called "backup" next to the exe, where the log file is. The same rule as the log file: when the folder of the exe can not be written (Program Files, a read-only place),
+        // it is %LOCALAPPDATA%\FiveMToolbox\backup.
+        public static string BackupDirOverride = null;   // for tests
         public static string BackupDir
         {
-            get { return System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), Info.Folder + @"\backup"); }
+            get { return BackupDirOverride ?? System.IO.Path.Combine(System.IO.Path.GetDirectoryName(AppLog.FilePath), "backup"); }
         }
 
         static int Find(byte[] d, int lo, int hi, string name)
@@ -1532,7 +1540,7 @@ namespace FiveMFrameCap
         }
 
         // ---- builds seen before, so they still show after a cache clean has deleted their files
-        static string MemoryFile { get { return Path.Combine(Path.GetDirectoryName(Blb.BackupDir), "builds.txt"); } }
+        static string MemoryFile { get { return Path.Combine(Info.DataDir, "builds.txt"); } }
 
         static Dictionary<string, List<string>> LoadMemory()
         {
@@ -1564,7 +1572,7 @@ namespace FiveMFrameCap
         }
 
         // builds the user removed with "Reset the list": they stay out of the list until their file is on disk again
-        static string ForgottenFile { get { return Path.Combine(Path.GetDirectoryName(Blb.BackupDir), "builds-forgotten.txt"); } }
+        static string ForgottenFile { get { return Path.Combine(Info.DataDir, "builds-forgotten.txt"); } }
 
         static List<string> LoadForgotten()
         {
@@ -1716,7 +1724,7 @@ namespace FiveMFrameCap
     static class CapMemory
     {
         public static string PathOverride = null;   // for tests
-        static string FilePath { get { return PathOverride ?? Path.Combine(Path.GetDirectoryName(Blb.BackupDir), "caps-before.txt"); } }
+        static string FilePath { get { return PathOverride ?? Path.Combine(Info.DataDir, "caps-before.txt"); } }
 
         static Dictionary<string, string[]> Load()
         {
@@ -2443,7 +2451,7 @@ namespace FiveMFrameCap
         public static string KeyPath = @"Software\Microsoft\DirectX\UserGpuPreferences";   // the self test uses another key
         public static string MemoryOverride = null;                                          // the self test uses another file
         const string None = "!none!";
-        static string MemoryFile { get { return MemoryOverride ?? Path.Combine(Path.GetDirectoryName(Blb.BackupDir), "gpupref-before.txt"); } }
+        static string MemoryFile { get { return MemoryOverride ?? Path.Combine(Info.DataDir, "gpupref-before.txt"); } }
 
         // an integrated chip and a dedicated card are both there
         public static bool Wanted(List<Gpu> gpus)
@@ -3055,7 +3063,7 @@ namespace FiveMFrameCap
     {
         static string FilePath
         {
-            get { return Path.Combine(Path.GetDirectoryName(Blb.BackupDir), "settings.txt"); }
+            get { return Path.Combine(Info.DataDir, "settings.txt"); }
         }
 
         public static string Get(string key, string def)
@@ -10519,6 +10527,22 @@ namespace FiveMFrameCap
                     int inFile = 0;
                     foreach (string ln in File.ReadAllLines(AppLog.FilePath)) if (ln.Contains(rmark)) inFile++;
                     rck(inFile == 480, "the log file keeps every line when 8 threads write at once (" + inFile + " of 480)");
+
+                    // the backups go in a folder "backup" next to the exe (the folder of the log file), the small state files stay in the data folder
+                    string exeDirB = Path.GetDirectoryName(AppLog.FilePath);
+                    rck(Blb.BackupDir == Path.Combine(exeDirB, "backup"), "the backup folder is next to the log file (" + Blb.BackupDir + ")");
+                    rck(string.Equals(exeDirB.TrimEnd('\\'), AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase), "that is the folder of the exe (it can be written here)");
+                    string fakeDb = Path.Combine(rtmp, "drsdb"); Directory.CreateDirectory(fakeDb); File.WriteAllBytes(Path.Combine(fakeDb, "nvdrsdb0.bin"), new byte[] { 1, 2, 3 });
+                    HashSet<string> bkSeen = new HashSet<string>(Directory.Exists(Blb.BackupDir) ? Directory.GetFiles(Blb.BackupDir, "nvdrsdb0.bin.*") : new string[0]);   // only what this test makes is deleted again
+                    string dbKeep = NvApi.DbDir; NvApi.DbDir = fakeDb;
+                    bool bkOk = NvApi.BackupDb(delegate(string s0) { });
+                    NvApi.DbDir = dbKeep;
+                    List<string> landed = new List<string>();
+                    if (Directory.Exists(Blb.BackupDir)) foreach (string lf0 in Directory.GetFiles(Blb.BackupDir, "nvdrsdb0.bin.*")) if (!bkSeen.Contains(lf0)) landed.Add(lf0);
+                    rck(bkOk && landed.Count == 1 && new FileInfo(landed[0]).Length == 3, "a backup copy lands in the backup folder next to the exe");
+                    foreach (string lf in landed) { try { File.Delete(lf); } catch (Exception) { } }
+                    try { if (Directory.Exists(Blb.BackupDir) && Directory.GetFileSystemEntries(Blb.BackupDir).Length == 0) Directory.Delete(Blb.BackupDir); } catch (Exception) { }
+                    rck(Info.DataDir == Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FiveMToolbox") && Info.DataDir != exeDirB, "the small state files (Undo memory, lists, settings) stay in the data folder, not next to the exe");
 
                     // DLLs come from the Windows folder only
                     object[] dll = Assembly.GetExecutingAssembly().GetCustomAttributes(typeof(DefaultDllImportSearchPathsAttribute), false);

@@ -73,7 +73,7 @@ Developed and tested on Windows 11 with an AMD Radeon RX 9070 XT, an NVIDIA RTX 
 
 ## Safety
 
-- Every change makes a backup first. The "Backups" button opens the folder (`%LOCALAPPDATA%\FiveMToolbox\backup`).
+- Every change makes a backup first. The "Backups" button opens the folder: it is called `backup` and sits next to the exe (the same place as the log file). When the folder of the exe can not be written, it is `%LOCALAPPDATA%\FiveMToolbox\backup`.
 - The program checks its own work after a change.
 - It writes a log file (`FiveMToolbox-log.txt`) next to the exe, or in your local AppData folder when that folder is read-only. The "Report" button copies the whole log. The log has file paths and the name of your PC in it, so read it before you paste it in public.
 
