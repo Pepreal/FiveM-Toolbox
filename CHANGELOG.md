@@ -5,9 +5,11 @@ Tags: NEW, CHANGED, FIXED.
 
 ---
 
-## v0.8.1 - 2026-11-10 (latest)
+## v0.8.1 - 2026-11-11 (latest)
 
 **NEW** - **A build that Radeon Software does not know yet is added by the program (AMD).** *Before, the program said "Not in Radeon Software yet" and you had to add the build by hand in Radeon Software (Gaming > Games). Now Apply does it: it makes a profile for the build through AMD's own library (the library Radeon Software uses itself), copied from the profile of another FiveM build, with Radeon Chill on and your cap in both values. Radeon Software closes for a moment and opens again, like for every change, and the program checks that AMD shows the new value. The build also shows in the Radeon Software list of games (Gaming > Games): a build that you removed there shows again, and a build that is not in the list gets a new entry. Undo takes the build out of Radeon Software again and hides it in the list, like the Remove button does. There must be one FiveM build in Radeon Software with Radeon Chill values to copy from; if there is none, the program still says to add one by hand. Tested on an AMD Radeon RX 9070 XT.*
+
+**CHANGED** - **The download is a zip with its own folder.** *Before, the release page had only FiveMToolbox.exe. Now the release is one zip (FiveMToolbox-0.8.1.zip) that holds the folder "FiveM Toolbox" with the exe, the README, this changelog and the license. Unzip it into a folder of your own: the program makes its "backup" folder and its log file next to the exe, in that folder. To update, unzip the new version over the old folder: your backups and your log stay. The README says this too.*
 
 **CHANGED** - **The button "Desktop icon: pure mode" is lined up with the rest.** *On the FiveM cache tab it was a little wider than "Clean cache" and its text started at a place that matched nothing. Now it has the same left and right edge as "Clean cache", and its text starts under "Start FiveM", on the height of the button. The README picture of the tab shows it.*
 
