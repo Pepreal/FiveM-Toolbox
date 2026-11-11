@@ -9,6 +9,26 @@ Tags: NEW, CHANGED, FIXED.
 
 **NEW** - **A build that Radeon Software does not know yet is added by the program (AMD).** *Before, the program said "Not in Radeon Software yet" and you had to add the build by hand in Radeon Software (Gaming > Games). Now Apply does it: it makes a profile for the build through AMD's own library (the library Radeon Software uses itself), copied from the profile of another FiveM build, with Radeon Chill on and your cap in both values. Radeon Software closes for a moment and opens again, like for every change, and the program checks that AMD shows the new value. The build also shows in the Radeon Software list of games (Gaming > Games): a build that you removed there shows again, and a build that is not in the list gets a new entry. Undo takes the build out of Radeon Software again and hides it in the list, like the Remove button does. There must be one FiveM build in Radeon Software with Radeon Chill values to copy from; if there is none, the program still says to add one by hand. Tested on an AMD Radeon RX 9070 XT.*
 
+**FIXED** - **The window can not be closed while a job changes something.** *Before, closing the window in the middle of a change for AMD could leave Radeon Software closed and a file half changed. Now the window says that a job is still running and stays open. A search only reads, so the window can still be closed during a search.*
+
+**FIXED** - **Several small problems in the AMD changes.** *A second Apply on a build that the program added keeps the note that the program added it, so Undo still takes the build out again (before, Undo only set the old number back and the profile stayed). If something fails half way, Radeon's profile file goes back as it was. When Radeon Software can not be closed, nothing is changed. When AMD's library is not ready for a moment (Radeon Software is starting), the program says so; before it said "not in Radeon Software yet", and Undo forgot the build. A failure of the list-of-games file of Radeon Software no longer undoes a cap that works, and that file is written through a side file, so it is never half written. Undo puts the graphics preference back only when the cap is back.*
+
+**FIXED** - **"Clean up old entries" for NVIDIA is safer.** *It removes nothing when no copy of the driver profile database could be made. It leaves a profile alone when the profile holds a program that is not a FiveM build, when it is not a profile of this program, or when its build is on disk but the list of builds does not show it this time. When the driver ignores a profile, the Undo memory of that build stays now (it belongs to the profile the driver really uses). Undo with a value that was saved for the other kind of graphics driver is skipped.*
+
+**FIXED** - **Small files are written safely.** *The Undo memory, the DNS backup, the lists of builds and the settings are written to a side file first, and then the side file takes the place of the old file. Before, a crash or a bad character could leave an empty file.*
+
+**FIXED** - **The log.** *A message with line breaks (a stack trace) moved the click places of the fold lines [+] and [-], so a click could fold the wrong job. The log file lost lines when two parts of the program wrote at once. The log did not change its colours when Windows changed between light and dark. It is also faster now, because the severity of a line is worked out once.*
+
+**FIXED** - **A pasted number in the cap box.** *In Dutch Windows a pasted "45,5" was taken as a cap of 45. The box takes whole numbers only, in every language.*
+
+**FIXED** - **A folder name with an "&" in it** (for example "Games & Mods") **showed without the "&"** in the folder list, on the activity card and in the log path.
+
+**FIXED** - **The chip inside an old Ryzen or A-series processor** ("Radeon RX Vega 11 Graphics", "Radeon R7 Graphics") **was seen as a dedicated card.**
+
+**CHANGED** - **The program loads every DLL (AMD, NVIDIA, Windows) from the Windows folder only.** *Before, a file with the same name next to the exe was tried first.*
+
+**CHANGED** - **Smaller things.** *A failure while the program starts is written to the log now. The search for FiveM gives every drive its own time. A network drive that is gone no longer holds up the start. The 2 second timer rests while the window is minimised. Code that nothing used was removed.*
+
 **CHANGED** - **A line in the log with a result has the colour as its background.** *Before, the text was coloured, and that was hard to see on the light theme. Now the line has a coloured background (green: good, yellow: a small problem, orange: a warning, red: an error, purple: something really broken) and the text keeps the normal colour. It is the same in the light and the dark theme, and the text is easy to read on every colour (checked by a self test).*
 
 **CHANGED** - **The log keeps a finished job open while you stay on the tab.** *Before, a job (for example the search when the program starts) was folded into one line at once. Now it stays open while you are on the tab where it happened, and it folds up when you change to another tab. A job you open or fold by hand stays as you left it, a job with a problem stays open, and the pop-out log folds a finished job at once, as before.*

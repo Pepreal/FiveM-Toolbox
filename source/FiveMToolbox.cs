@@ -24,16 +24,44 @@ using Microsoft.Win32;
 [assembly: AssemblyProduct("FiveM Toolbox")]
 [assembly: AssemblyVersion("0.8.1.0")]
 [assembly: AssemblyFileVersion("0.8.1.0")]
+[assembly: DefaultDllImportSearchPaths(DllImportSearchPath.System32)]   // every DllImport (AMD, NVIDIA, Windows) loads from the Windows folder only, never from the folder of the exe
 
 namespace FiveMFrameCap
 {
     // Everything the program says goes through here: the small box in the window, the big log window, and log.txt.
-    class LogEntry { public string Text; public string Time; public string Message; public string Tool; public bool Debug; public int Group; }
+    class LogEntry { public string Text; public string Time; public string Message; public string Tool; public bool Debug; public int Group; public int Sev = -1; }   // Sev = the severity of the message, worked out once
+
+    // Small files that hold what the user could lose (the old cap values for Undo, the old DNS, the lists of builds): the new bytes are built first and written to a side
+    // file, and only when that is complete it takes the place of the old file. A crash, a full disk or a bad character leaves the old file as it was (never an empty one).
+    static class SafeIo
+    {
+        public static void WriteBytes(string path, byte[] data)
+        {
+            string tmp = path + ".new";
+            File.WriteAllBytes(tmp, data);
+            try
+            {
+                if (new FileInfo(tmp).Length != data.Length) throw new IOException("the side file is not complete");
+                if (File.Exists(path)) File.Replace(tmp, path, null); else File.Move(tmp, path);
+            }
+            catch (Exception) { try { File.Delete(tmp); } catch (Exception) { } throw; }
+        }
+
+        public static void WriteText(string path, string text) { WriteBytes(path, new UTF8Encoding(false).GetBytes(text)); }
+
+        public static void WriteLines(string path, string[] lines)
+        {
+            StringBuilder sb = new StringBuilder();
+            foreach (string l in lines) sb.Append(l).Append("\r\n");
+            WriteText(path, sb.ToString());
+        }
+    }
 
     // Everything the program says goes through here: the log at the bottom of the window, the pop-out log, and the log file.
     static class AppLog
     {
         static readonly object Gate = new object();
+        static readonly object FileGate = new object();
         static readonly List<LogEntry> Entries = new List<LogEntry>();
         static readonly Dictionary<int, bool> done = new Dictionary<int, bool>();
         static string path;
@@ -100,8 +128,8 @@ namespace FiveMFrameCap
             e.Message = s;
             e.Text = e.Time + "  [" + e.Tool + "] " + (debug ? "[debug] " : "") + s;
             lock (Gate) { Entries.Add(e); }
-            try { File.AppendAllText(FilePath, DateTime.Now.ToString("yyyy-MM-dd ") + e.Text + "\r\n"); }
-            catch (Exception) { }
+            string logFile = FilePath;
+            lock (FileGate) { try { File.AppendAllText(logFile, DateTime.Now.ToString("yyyy-MM-dd ") + e.Text + "\r\n"); } catch (Exception) { } }   // one writer at a time: two at once lose lines
             Action<LogEntry> h = Added;
             if (h != null) { try { h(e); } catch (Exception) { } }
         }
@@ -170,7 +198,12 @@ namespace FiveMFrameCap
                 else AppLog.Debug("Radeon profile file not found: " + blb);
                 foreach (DriveInfo di in DriveInfo.GetDrives())
                 {
-                    try { AppLog.Debug("drive " + di.Name + " type " + di.DriveType + (di.IsReady ? " ready, " + di.DriveFormat : " not ready")); } catch (Exception) { }
+                    try
+                    {
+                        if (di.DriveType == DriveType.Network) { AppLog.Debug("drive " + di.Name + " type Network (not probed: a network drive that is gone can hold the start for a long time)"); continue; }
+                        AppLog.Debug("drive " + di.Name + " type " + di.DriveType + (di.IsReady ? " ready, " + di.DriveFormat : " not ready"));
+                    }
+                    catch (Exception) { }
                 }
                 AppLog.Debug("backup folder: " + Blb.BackupDir);
                 try
@@ -244,7 +277,6 @@ namespace FiveMFrameCap
         // logical -> screen pixels
         public static int S(int v) { return Aware ? (int)Math.Round(v * Scale) : v; }
         public static float F(float v) { return Aware ? v * Scale : v; }
-        public static Rectangle S(Rectangle r) { return Aware ? new Rectangle(S(r.X), S(r.Y), S(r.Width), S(r.Height)) : r; }
         // screen pixels -> logical
         public static int L(int px) { return Aware ? (int)Math.Round(px / Scale) : px; }
 
@@ -569,7 +601,7 @@ namespace FiveMFrameCap
             {
                 if (tried++ >= 40) break;
                 if (string.IsNullOrEmpty(a.File) || string.IsNullOrEmpty(a.Path)) continue;
-                List<Prop> pr = ReadProps(a.File, a.Path.TrimEnd('*'));
+                List<Prop> pr = ReadProps(a.File, a.Path.TrimEnd('*', '\\'));
                 if (HasChill(pr)) { from = a.File; return pr; }
             }
             return null;
@@ -661,11 +693,13 @@ namespace FiveMFrameCap
             return pv;
         }
 
+        public const int NotReady = -99;   // the Rc of Read when the AMD library could not start (that is NOT the same as "the program is not in Radeon Software")
+
         static ProfileValues ReadRaw(string file, string dir)
         {
             ProfileValues pv = new ProfileValues();
             IntPtr ctx;
-            if (ADL2_Main_Control_Create(AllocCb, 1, out ctx) != 0) { pv.Rc = -99; return pv; }
+            if (ADL2_Main_Control_Create(AllocCb, 1, out ctx) != 0) { pv.Rc = NotReady; return pv; }
             try
             {
                 IntPtr p;
@@ -811,11 +845,6 @@ namespace FiveMFrameCap
         }
 
         // Write the cap into one block. Same slot size, padded with empty bytes, so nothing else moves.
-        public static void Patch(byte[] d, Block b, int cap)
-        {
-            Patch(d, b, delegate(string name, string old, int len) { return Val.Make(old, cap, len); });
-        }
-
         // make(name, oldText, slotBytes) gives the new text for that value (null = it does not fit)
         public static void Patch(byte[] d, Block b, Func<string, string, int, string> make)
         {
@@ -857,7 +886,6 @@ namespace FiveMFrameCap
         public static string FilePath { get { return PathOverride ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"AMD\CN\gmdb.blb"); } }
         static readonly Encoding Raw = Encoding.GetEncoding("iso-8859-1");
 
-        public static string ToText(byte[] b) { return Raw.GetString(b); }
         public static byte[] ToBytes(string t) { return Raw.GetBytes(t); }
 
         class Span { public int A; public int B; }   // A = place of the "{" of a game, B = place of its "}"
@@ -1075,13 +1103,17 @@ namespace FiveMFrameCap
         static string Edit(string exe, string title, bool show, out bool changed, out string what)
         {
             changed = false; what = null;
-            string p = FilePath;
-            if (!File.Exists(p)) { what = "there is no game list file"; return what; }
-            string t = Raw.GetString(File.ReadAllBytes(p));
-            string r = show ? Show(t, exe, title, out what) : Hide(t, exe, out what);
-            if (r == null) return what;
-            if (r != t) { byte[] nb = Raw.GetBytes(r); File.WriteAllBytes(p, nb); changed = true; }     // the bytes are built first, then the file is opened
-            return null;
+            try
+            {
+                string p = FilePath;
+                if (!File.Exists(p)) { what = "there is no game list file"; return what; }
+                string t = Raw.GetString(File.ReadAllBytes(p));
+                string r = show ? Show(t, exe, title, out what) : Hide(t, exe, out what);
+                if (r == null) return what;
+                if (r != t) { SafeIo.WriteBytes(p, Raw.GetBytes(r)); changed = true; }     // the bytes are built first and written to a side file: the list is never left half written
+                return null;
+            }
+            catch (Exception ex) { what = ex.Message; return what; }     // a list that cannot be changed must not undo a cap that works
         }
 
         // Return null when it worked (changed tells if the file was written), else the reason.
@@ -1124,7 +1156,8 @@ namespace FiveMFrameCap
         }
         public static bool Installed() { return File.Exists(Exe); }
         public static bool Running() { return Process.GetProcessesByName("RadeonSoftware").Length > 0; }
-        public static void Stop()
+        // false = Radeon Software is still there after this (it could not be closed)
+        public static bool Stop()
         {
             foreach (string n in new string[] { "RadeonSoftware", "cncmd" })
                 foreach (Process p in Process.GetProcessesByName(n))
@@ -1132,6 +1165,7 @@ namespace FiveMFrameCap
                     try { p.Kill(); p.WaitForExit(10000); } catch (Exception) { }
                 }
             Thread.Sleep(2000);
+            return !Running();
         }
         public static void Start()
         {
@@ -1164,7 +1198,7 @@ namespace FiveMFrameCap
         [StructLayout(LayoutKind.Sequential)] struct KmtClose { public uint Adapter; }
         const int AdapterInfoSize = 20;           // D3DKMT_ADAPTERINFO: handle (4), LUID (8), number of sources (4), present move regions preferred (4)
         const int TypeRegistryInfo = 8, TypeAdapterType = 15, RegistryInfoSize = 2080;   // D3DKMT_ADAPTERREGISTRYINFO: four strings of 260 UTF-16 characters, the first is the adapter name
-        public const uint FlagSoftware = 4, FlagHybridDiscrete = 16, FlagHybridIntegrated = 32;
+        public const uint FlagHybridDiscrete = 16, FlagHybridIntegrated = 32;
 
         public class Adapter { public string Name = ""; public uint Flags; public string Luid = ""; }   // Luid like "0x00000000_0x00010ce8" (high_low), the same spelling as in the counter names
 
@@ -1246,6 +1280,7 @@ namespace FiveMFrameCap
             if (vendor == "NVIDIA") return n.Contains("tegra") ? "" : "dedicated";
             if (vendor == "AMD")
             {
+                if (n.TrimEnd().EndsWith("graphics") && (n.Contains("vega") || Regex.IsMatch(n, @"\br[579]\b"))) return "integrated";   // "RX Vega 11 Graphics" and "R7 Graphics" are the chips inside old Ryzen and A-series processors
                 if (Regex.IsMatch(n, @"\b(rx|pro|vii|fury|hd|frontier)\b") || Regex.IsMatch(n, @"\br[579]\b")) return "dedicated";
                 if (Regex.IsMatch(n, @"\b\d{3}m\b") || n.Contains("vega") || n.TrimEnd().EndsWith("graphics")) return "integrated";
                 return "";
@@ -1471,12 +1506,12 @@ namespace FiveMFrameCap
             }
             AppLog.Debug("search 4 (shortcuts): " + lnkCount + " FiveM shortcut(s)");
             // 5. look through the fixed drives (a few folders deep)
-            DateTime stop = DateTime.UtcNow.AddSeconds(45);
             foreach (DriveInfo di in DriveInfo.GetDrives())
             {
                 try { if (di.DriveType != DriveType.Fixed || !di.IsReady) continue; } catch (Exception) { continue; }
                 log("Looking on drive " + di.Name + " ...");
                 DateTime t0 = DateTime.UtcNow;
+                DateTime stop = t0.AddSeconds(30);   // every drive has its own time: a slow drive cannot use up the time of the next one
                 List<string> found = new List<string>();
                 Scan(di.RootDirectory.FullName, 3, found, stop);
                 AppLog.Debug("search 5 (drive " + di.Name + "): " + found.Count + " FiveM.app folder(s) in " + (int)(DateTime.UtcNow - t0).TotalMilliseconds + " ms" + (DateTime.UtcNow > stop ? " (time limit reached)" : ""));
@@ -1541,7 +1576,7 @@ namespace FiveMFrameCap
 
         static void SaveForgotten(List<string> l)
         {
-            try { Directory.CreateDirectory(Path.GetDirectoryName(ForgottenFile)); File.WriteAllLines(ForgottenFile, l.ToArray()); }
+            try { Directory.CreateDirectory(Path.GetDirectoryName(ForgottenFile)); SafeIo.WriteLines(ForgottenFile, l.ToArray()); }
             catch (Exception ex) { AppLog.Debug("builds: could not save the removed list: " + ex.Message); }
         }
 
@@ -1629,7 +1664,7 @@ namespace FiveMFrameCap
                     Directory.CreateDirectory(Path.GetDirectoryName(MemoryFile));
                     List<string> lines = new List<string>();
                     foreach (KeyValuePair<string, List<string>> kv in m) foreach (string e in kv.Value) lines.Add(kv.Key + "\t" + e);
-                    File.WriteAllLines(MemoryFile, lines.ToArray());
+                    SafeIo.WriteLines(MemoryFile, lines.ToArray());
                 }
                 catch (Exception ex) { AppLog.Debug("builds: could not save the list: " + ex.Message); }
             }
@@ -1706,10 +1741,13 @@ namespace FiveMFrameCap
                 Directory.CreateDirectory(Path.GetDirectoryName(FilePath));
                 List<string> lines = new List<string>();
                 foreach (KeyValuePair<string, string[]> kv in d) lines.Add(kv.Key + "\t" + kv.Value[0] + "\t" + kv.Value[1]);
-                File.WriteAllLines(FilePath, lines.ToArray());
+                SafeIo.WriteLines(FilePath, lines.ToArray());
             }
             catch (Exception ex) { AppLog.Debug("could not save the old cap values: " + ex.Message); }
         }
+
+        // the exe paths this tool changed and did not undo
+        public static List<string> Exes() { return new List<string>(Load().Keys); }
 
         // {min, max} as Radeon wrote them, or null when this tool has not changed that build
         public static string[] Get(string exe)
@@ -1780,8 +1818,8 @@ namespace FiveMFrameCap
     static class NvApi
     {
         // NvAPI_Status values (nvapi_lite_common.h)
-        public const int Ok = 0, Error = -1, LibraryNotFound = -2, NoImplementation = -3, NotInitialized = -4, InvalidArgument = -5, DeviceNotFound = -6, EndEnumeration = -7, IncompatibleStructVersion = -9;
-        public const int InvalidUserPrivilege = -137, SettingNotFound = -160, ProfileNotFound = -163, ProfileNameInUse = -164, ExeNotFound = -166, ExeAlreadyInUse = -167, AccessDenied = -175;
+        public const int Ok = 0, Error = -1, LibraryNotFound = -2, NoImplementation = -3, EndEnumeration = -7, IncompatibleStructVersion = -9;
+        public const int InvalidUserPrivilege = -137, SettingNotFound = -160, ProfileNotFound = -163, ExeNotFound = -166, AccessDenied = -175;
         public const uint FrlFpsId = 0x10835002;   // "Frame Rate Limiter" (NvApiDriverSettings.h: FRL_FPS_ID): a DWORD, 0 = off, 1 to 1023 = frames per second
 
         public static Func<INvDrs> Factory = delegate { return new NvDrsNative(); };
@@ -1830,7 +1868,8 @@ namespace FiveMFrameCap
 
         // A copy of the driver's profile database files before the first change. If it cannot be copied the change still goes on:
         // the old limit is remembered for Undo, and only one setting of the FiveM builds is changed.
-        public static void BackupDb(Action<string> log)
+        // Returns false when the copy failed: the clean-up of old profiles removes nothing then (it deletes whole profiles).
+        public static bool BackupDb(Action<string> log)
         {
             try
             {
@@ -1845,8 +1884,9 @@ namespace FiveMFrameCap
                 }
                 log(n > 0 ? "  Backup of the NVIDIA driver profile database saved (" + n + " file(s) in " + dest + ")."
                           : "  The NVIDIA driver profile database file was not found, so no copy was made (the old limit is still remembered for Undo).");
+                return true;
             }
-            catch (Exception ex) { log("  Could not copy the NVIDIA driver profile database: " + ex.Message + " (going on: the old limit is remembered for Undo)."); }
+            catch (Exception ex) { log("  Could not copy the NVIDIA driver profile database: " + ex.Message + " (going on: the old limit is remembered for Undo)."); return false; }
         }
     }
 
@@ -1903,7 +1943,7 @@ namespace FiveMFrameCap
         int Load()
         {
             if (query != null) return NvApi.Ok;
-            IntPtr lib = LoadLibraryW("nvapi64.dll");
+            IntPtr lib = LoadLibraryW(Path.Combine(Environment.SystemDirectory, "nvapi64.dll"));   // the full path: a nvapi64.dll next to the exe is never loaded
             if (lib == IntPtr.Zero) return NvApi.LibraryNotFound;
             IntPtr q = GetProcAddress(lib, "nvapi_QueryInterface");
             if (q == IntPtr.Zero) return NvApi.NoImplementation;
@@ -2294,7 +2334,11 @@ namespace FiveMFrameCap
         }
 
         public string Apply(Build b, int cap) { return Change(b, cap, true); }
-        public string Revert(Build b, string wantMin, string wantMax) { return Change(b, Val.First(wantMin), false); }   // -1 = there was no limit before
+        public string Revert(Build b, string wantMin, string wantMax)
+        {
+            if (wantMin == null || !wantMin.StartsWith("nv::", StringComparison.Ordinal)) return "Undo skipped: the old value was saved for another graphics driver. Nothing was changed.";
+            return Change(b, Val.First(wantMin), false);   // -1 = there was no limit before
+        }
 
         string Fail(string step, int rc)
         {
@@ -2455,7 +2499,7 @@ namespace FiveMFrameCap
                 Directory.CreateDirectory(Path.GetDirectoryName(MemoryFile));
                 List<string> lines = new List<string>();
                 foreach (KeyValuePair<string, string> kv in d) lines.Add(kv.Key + "\t" + kv.Value);
-                File.WriteAllLines(MemoryFile, lines.ToArray());
+                SafeIo.WriteLines(MemoryFile, lines.ToArray());
             }
             catch (Exception ex) { AppLog.Debug("could not save the old graphics preference: " + ex.Message); }
         }
@@ -2551,6 +2595,20 @@ namespace FiveMFrameCap
         public const string FailWin = "Could not remove an entry of the Windows graphics list. Open the full log for details.";
         static readonly Regex BuildExeRx = new Regex(@"(^|[\\/])FiveM(_b\d+)?_GTAProcess\.exe$", RegexOptions.IgnoreCase);
 
+        static readonly Regex OwnExeRx = new Regex(@"^FiveM(_b\d+)?(_GTAProcess)?\.exe$", RegexOptions.IgnoreCase);   // the programs this tool puts in a profile of its own
+
+        // A build this tool changed before (Undo still knows it), whose file is on disk, even though the list of builds does not show it now
+        // (a second install that the search did not find this time). Its profile is not old.
+        static bool KnownElsewhere(List<string> apps)
+        {
+            foreach (string exe in CapMemory.Exes())
+            {
+                string f; try { f = Path.GetFileName(exe); } catch (Exception) { continue; }
+                foreach (string a in apps) if (string.Equals(f, FileOf(a), StringComparison.OrdinalIgnoreCase) && File.Exists(exe)) return true;
+            }
+            return false;
+        }
+
         static string FileOf(string app) { return Path.GetFileName((app ?? "").Replace('/', '\\')); }
         static string Problem(int rc) { return (rc == NvApi.InvalidUserPrivilege || rc == NvApi.AccessDenied) ? NvWorker.FailAdmin : NvWorker.FailChange; }
 
@@ -2578,6 +2636,10 @@ namespace FiveMFrameCap
                         if (p.AppCount > p.Apps.Count) { log("  \"" + p.Name + "\": more programs than can be listed, left alone."); continue; }
                         List<Build> mine = new List<Build>();
                         foreach (string a in p.Apps) foreach (Build ob in onDisk) if (string.Equals(ob.FileName, FileOf(a), StringComparison.OrdinalIgnoreCase)) mine.Add(ob);
+                        bool foreign = false;
+                        foreach (string a in p.Apps) if (!OwnExeRx.IsMatch(FileOf(a))) foreign = true;
+                        if (foreign) { log("  \"" + p.Name + "\": holds a program that is not a FiveM build, left alone."); continue; }
+                        if (mine.Count == 0 && KnownElsewhere(p.Apps)) { log("  \"" + p.Name + "\": its build is on disk, only the list of builds does not show it now, stays."); continue; }
                         string why = null;
                         if (mine.Count == 0) why = WhyGone;
                         else if (p.Settings == 0) why = WhyEmpty;
@@ -2620,9 +2682,9 @@ namespace FiveMFrameCap
             removed = 0;
             string problem = null;
             List<TidyItem> nv = items.FindAll(delegate(TidyItem t) { return t.Kind == "nvidia"; });
+            if (nv.Count > 0 && !NvApi.BackupDb(log)) { log("  No copy of the driver profile database could be made, so no NVIDIA profile is removed."); problem = NvWorker.FailChange; nv.Clear(); }
             if (nv.Count > 0)
             {
-                NvApi.BackupDb(log);
                 List<TidyItem> done = new List<TidyItem>();
                 int before = -1, after = -1;
                 using (INvDrs d = NvApi.Factory())
@@ -2634,6 +2696,7 @@ namespace FiveMFrameCap
                         d.ProfileCount(out before);
                         foreach (TidyItem it in nv)
                         {
+                            if (!it.Name.StartsWith(NvWorker.ProfilePrefix, StringComparison.Ordinal)) { log("  \"" + it.Name + "\" was not made by this tool, left alone."); continue; }
                             rc = d.DeleteProfile(it.Name);
                             if (rc == 0) done.Add(it);
                             else { log("  NVIDIA driver error while removing the profile \"" + it.Name + "\": " + NvApi.Describe(rc)); if (problem == null) problem = Problem(rc); }
@@ -2670,7 +2733,7 @@ namespace FiveMFrameCap
                 foreach (TidyItem it in done)
                 {
                     log("  Removed the NVIDIA profile \"" + it.Name + "\".");
-                    foreach (string a in it.Apps) CapMemory.RemoveByFileName(FileOf(a));
+                    if (it.Why != WhyIgnored) foreach (string a in it.Apps) CapMemory.RemoveByFileName(FileOf(a));   // a profile the driver ignores: the Undo memory belongs to the profile the driver really uses
                 }
                 removed += done.Count;
             }
@@ -2705,12 +2768,6 @@ namespace FiveMFrameCap
             File.WriteAllBytes(p, data);
             Log("Backup saved: " + p);
             backedUp = true;
-        }
-
-        bool Matches(Build b, int cap)
-        {
-            Adl.ProfileValues v = Adl.Read(b.FileName, b.Dir);
-            return v.Found && Val.First(v.Min) == cap && Val.First(v.Max) == cap;
         }
 
         bool WaitFor(Build b, Func<Adl.ProfileValues, bool> done)
@@ -2751,8 +2808,8 @@ namespace FiveMFrameCap
         // Puts the files back as they were before this change (Radeon Software must be closed).
         static void PutBack(byte[] orig, byte[] listOrig, bool listChanged)
         {
-            if (orig != null) { File.WriteAllBytes(Blb.Path, orig); Blb.BumpReload(); }
-            if (listChanged && listOrig != null) File.WriteAllBytes(GameList.FilePath, listOrig);
+            try { if (orig != null) { File.WriteAllBytes(Blb.Path, orig); Blb.BumpReload(); } }
+            finally { if (listChanged && listOrig != null) File.WriteAllBytes(GameList.FilePath, listOrig); }   // the list is put back even when the first file could not be
         }
 
         // Makes the build show in Radeon Software's list of games (Gaming > Games). Returns true when the file was changed.
@@ -2787,12 +2844,13 @@ namespace FiveMFrameCap
             Log("  " + b.FileName + " is not in Radeon Software yet. Making a profile for it through AMD's own library, copied from the profile of " + from + " (" + props.Count + " properties, Radeon Chill on, cap " + cap + ").");
             if (Radeon.Running()) Radeon.Capture();
             S("Closing Radeon Software ...", 0.25); Log("  Closing Radeon Software (it would write its old settings back otherwise) ...");
-            Radeon.Stop();
+            bool closed = Radeon.Stop();
             string result = null;
             byte[] orig = null, listOrig = null;
             bool listChanged = false;
             try
             {
+                if (!closed) { Log("  Radeon Software did not close."); result = "Could not close Radeon Software. Nothing was changed."; return result; }
                 orig = File.ReadAllBytes(Blb.Path);
                 AppLog.Debug("profile file before: " + orig.Length + " bytes, md5 " + Md5(orig));
                 Backup(orig);
@@ -2839,25 +2897,29 @@ namespace FiveMFrameCap
             }
             finally
             {
-                if (!Radeon.Running()) { Log("  Starting Radeon Software again ..."); try { Radeon.Start(); } catch (Exception) { } }
+                if (!Radeon.Running()) { Log("  Starting Radeon Software again ..."); try { Radeon.Start(); } catch (Exception ex2) { Log("  Could not start Radeon Software: " + ex2.Message); } }
             }
             return result;
         }
 
         public const string ListMark = ":list";   // after NewMarker: this tool also made the build show in the list of games, so Undo hides it there again
+        const string AdlNotReady = "The AMD library is not ready (Radeon Software may be starting). Nothing was changed. Try again in a moment.";
 
         // Undo for a build that this tool added: the build and its profile are taken out of Radeon Software again (and hidden in the list of games when this tool had put it there).
         string RemoveNew(Build b, bool inList)
         {
-            if (!Adl.Read(b.FileName, b.Dir).Found) { CapMemory.Remove(b.Exe); return "Nothing to undo: the cap is already back."; }
+            Adl.ProfileValues now = Adl.Read(b.FileName, b.Dir);
+            if (now.Rc == Adl.NotReady) return AdlNotReady;
+            if (!now.Found) { CapMemory.Remove(b.Exe); return "Nothing to undo: the cap is already back."; }
             if (Radeon.Running()) Radeon.Capture();
             S("Closing Radeon Software ...", 0.25); Log("  Closing Radeon Software (it would write its old settings back otherwise) ...");
-            Radeon.Stop();
+            bool closed = Radeon.Stop();
             string result = null;
             byte[] orig = null, listOrig = null;
             bool listChanged = false;
             try
             {
+                if (!closed) { Log("  Radeon Software did not close."); result = "Could not close Radeon Software. Nothing was changed."; return result; }
                 orig = File.ReadAllBytes(Blb.Path);
                 Backup(orig);
                 if (inList) { listOrig = ReadList(); if (listOrig != null) BackupList(listOrig); }
@@ -2884,7 +2946,7 @@ namespace FiveMFrameCap
             }
             finally
             {
-                if (!Radeon.Running()) { Log("  Starting Radeon Software again ..."); try { Radeon.Start(); } catch (Exception) { } }
+                if (!Radeon.Running()) { Log("  Starting Radeon Software again ..."); try { Radeon.Start(); } catch (Exception ex2) { Log("  Could not start Radeon Software: " + ex2.Message); } }
             }
             return result;
         }
@@ -2893,7 +2955,9 @@ namespace FiveMFrameCap
         public string Apply(Build b, int cap)
         {
             S("Asking AMD what is set now ...", 0.02);
-            if (!Adl.Read(b.FileName, b.Dir).Found) return AddNew(b, cap);
+            Adl.ProfileValues first = Adl.Read(b.FileName, b.Dir);
+            if (first.Rc == Adl.NotReady) return AdlNotReady;
+            if (!first.Found) return AddNew(b, cap);
             return Change(b, delegate(string name, string old, int len) { return Val.Make(old, cap, len); },
                 delegate(Adl.ProfileValues v) { return Val.First(v.Min) == cap && Val.First(v.Max) == cap; },
                 "Set to " + cap + ".", "Already set to " + cap + ".", true);
@@ -2902,6 +2966,7 @@ namespace FiveMFrameCap
         // Puts the two cap values back to what they were before the last change this tool made.
         public string Revert(Build b, string wantMin, string wantMax)
         {
+            if (wantMin != null && wantMin.StartsWith("nv::", StringComparison.Ordinal)) return "Undo skipped: the old value was saved for another graphics driver. Nothing was changed.";
             if (wantMin == NewMarker) return RemoveNew(b, wantMax != null && wantMax.EndsWith(ListMark));
             return Change(b, delegate(string name, string old, int len) { string t = name == "Chil_MinFRate" ? wantMin : wantMax; return Encoding.Unicode.GetByteCount(t) <= len ? t : null; },
                 delegate(Adl.ProfileValues v) { return v.Min == wantMin && v.Max == wantMax; },
@@ -2913,6 +2978,7 @@ namespace FiveMFrameCap
         {
             S("Asking AMD what is set now ...", 0.05); Log(b.FileName + ": asking AMD what is set now ...");
             Adl.ProfileValues cur = Adl.Read(b.FileName, b.Dir);
+            if (cur.Rc == Adl.NotReady) return AdlNotReady;
             if (!cur.Found) return "Not in Radeon Software yet. Add it there once (Gaming > Games) and turn Radeon Chill on. Then run again.";
             Log("  AMD says: Radeon Chill " + (Val.First(cur.Pf) == 1 ? "on" : "off") + ", cap now " + Val.First(cur.Min) + " / " + Val.First(cur.Max));
             if (Val.First(cur.Pf) != 1) return "Radeon Chill is off for this build. Turn it on in Radeon Software once. This tool only changes the frame cap.";
@@ -2922,11 +2988,13 @@ namespace FiveMFrameCap
             bool wasRunning = Radeon.Running();
             if (wasRunning) Radeon.Capture();
             S("Closing Radeon Software ...", 0.2); Log("  Closing Radeon Software (it would write its old settings back otherwise) ...");
-            Radeon.Stop();
+            bool closed = Radeon.Stop();
             string result = null;
+            byte[] orig = null;
             try
             {
-                byte[] orig = File.ReadAllBytes(Blb.Path);
+                if (!closed) { Log("  Radeon Software did not close."); result = "Could not close Radeon Software. Nothing was changed."; return result; }
+                orig = File.ReadAllBytes(Blb.Path);
                 AppLog.Debug("profile file before: " + orig.Length + " bytes, md5 " + Md5(orig));
                 Backup(orig);
                 List<Block> blocks = Blb.Layout(orig);
@@ -2956,7 +3024,8 @@ namespace FiveMFrameCap
                         if (WaitFor(b, done))
                         {
                             result = okText;
-                            if (isApply) CapMemory.Save(b.Exe, cur.Min, cur.Max); else CapMemory.Remove(b.Exe);
+                            if (isApply) { string[] mem = CapMemory.Get(b.Exe); if (mem == null || mem[0] != NewMarker) CapMemory.Save(b.Exe, cur.Min, cur.Max); }   // a build this tool added keeps its "added" note, so Undo takes it out again
+                            else CapMemory.Remove(b.Exe);
                             try { byte[] after = File.ReadAllBytes(Blb.Path); AppLog.Debug("profile file after: " + after.Length + " bytes, md5 " + Md5(after)); } catch (Exception) { }
                             break;
                         }
@@ -2968,10 +3037,14 @@ namespace FiveMFrameCap
                     if (result == null) result = "Could not confirm which profile belongs to this build. Nothing was changed.";
                 }
             }
-            catch (Exception ex) { result = "Error: " + ex.Message; AppLog.Debug("exception in Apply: " + ex); }
+            catch (Exception ex)
+            {
+                result = "Error: " + ex.Message; AppLog.Debug("exception in Apply: " + ex);
+                try { Radeon.Stop(); if (orig != null) { File.WriteAllBytes(Blb.Path, orig); Blb.BumpReload(); } } catch (Exception) { }   // the profile file goes back as it was
+            }
             finally
             {
-                if (!Radeon.Running()) { Log("  Starting Radeon Software again ..."); try { Radeon.Start(); } catch (Exception) { } }
+                if (!Radeon.Running()) { Log("  Starting Radeon Software again ..."); try { Radeon.Start(); } catch (Exception ex2) { Log("  Could not start Radeon Software: " + ex2.Message); } }
             }
             return result;
         }
@@ -3007,7 +3080,7 @@ namespace FiveMFrameCap
                         if (!line.StartsWith(key + "=") && line.Trim().Length > 0) lines.Add(line);
                 lines.Add(key + "=" + value);
                 Directory.CreateDirectory(Path.GetDirectoryName(FilePath));
-                File.WriteAllLines(FilePath, lines.ToArray());
+                SafeIo.WriteLines(FilePath, lines.ToArray());
             }
             catch (Exception) { }
         }
@@ -3116,7 +3189,7 @@ namespace FiveMFrameCap
                 catch (Exception) { }
             };
             if (c.IsHandleCreated) apply();
-            if (!hooked.ContainsKey(c)) { hooked[c] = true; c.HandleCreated += delegate { apply(); }; }
+            if (!hooked.ContainsKey(c)) { hooked[c] = true; c.HandleCreated += delegate { apply(); }; c.Disposed += delegate { hooked.Remove(c); }; }
             if (c is DataGridView) foreach (Control k in c.Controls) Scroll(k);
         }
 
@@ -3188,16 +3261,6 @@ namespace FiveMFrameCap
             g.ColumnHeadersDefaultCellStyle.SelectionBackColor = Bg3; g.ColumnHeadersDefaultCellStyle.SelectionForeColor = Text;
             g.DefaultCellStyle.BackColor = Bg2; g.DefaultCellStyle.ForeColor = Text;
             g.DefaultCellStyle.SelectionBackColor = Bg4; g.DefaultCellStyle.SelectionForeColor = Text;
-        }
-
-        // The border of a "card" panel (the cache tool uses these).
-        public static void CardPaint(object sender, PaintEventArgs e)
-        {
-            Panel p = (Panel)sender;
-            bool warn = (p.Tag as string) == "cardwarn";
-            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            using (Pen pen = new Pen(warn ? Bad : Border, warn ? 1.6f : 1f))
-                e.Graphics.DrawRectangle(pen, 0, 0, p.Width - 1, p.Height - 1);
         }
     }
 
@@ -3440,7 +3503,7 @@ namespace FiveMFrameCap
             Directory.CreateDirectory(Dir);
             StringBuilder sb = new StringBuilder();
             foreach (DnsBackup b in list) sb.AppendLine(b.Id + "|" + b.Name + "|" + b.V4Mode + "|" + b.V4List + "|" + b.V6Mode + "|" + b.V6List);
-            File.WriteAllText(BackupFile, sb.ToString());
+            SafeIo.WriteText(BackupFile, sb.ToString());
         }
 
         public static string BackupSummary()
@@ -3839,7 +3902,7 @@ namespace FiveMFrameCap
     // ---------------------------------------------------------------- FiveM cache tool
     class CacheItem
     {
-        public string Key; public string Title; public string Detail; public bool Risky;
+        public string Key; public string Title; public string Detail;
         public List<string> Paths = new List<string>();
         public List<long> PathBytes = new List<long>();
         public long Bytes;
@@ -3860,7 +3923,7 @@ namespace FiveMFrameCap
             l.Detail = Loc.T("Old log files and crash dumps. Safe to remove.");
             l.Paths.Add(Path.Combine(root, "logs")); l.Paths.Add(Path.Combine(root, "crashes"));
             CacheItem d = new CacheItem();
-            d.Key = "deep"; d.Title = Loc.T("Login and saved data (deep clean)"); d.Risky = true;
+            d.Key = "deep"; d.Title = Loc.T("Login and saved data (deep clean)");
             d.Detail = Loc.T("You have to log in to FiveM again. Your key binds and graphics settings stay. Use it only when the normal clean did not help.");
             d.Paths.Add(Path.Combine(data, "nui-storage")); d.Paths.Add(Path.Combine(data, "game-storage"));
             return new List<CacheItem>(new CacheItem[] { t, l, d });
@@ -4469,7 +4532,6 @@ namespace FiveMFrameCap
             autoHide.Tick += delegate { autoHide.Stop(); if (state == "ok" || state == "info") HideNow(); };
         }
 
-        public bool IsRunning { get { return state == "run"; } }
 
         // The card is docked at the top of the log area. Its height follows the slide, so the log is pushed down while it shows.
         public void Place()
@@ -4606,10 +4668,10 @@ namespace FiveMFrameCap
             int tx = Dpi.S(64);
             int rightPad = state == "run" ? Dpi.S(74) : Dpi.S(46);
             using (Font f = new Font("Segoe UI", 10.5f, FontStyle.Bold))
-                TextRenderer.DrawText(g, title, f, new Rectangle(tx, Dpi.S(7), Math.Max(Dpi.S(10), Width - tx - rightPad), Dpi.S(20)), Theme.Text, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
+                TextRenderer.DrawText(g, title, f, new Rectangle(tx, Dpi.S(7), Math.Max(Dpi.S(10), Width - tx - rightPad), Dpi.S(20)), Theme.Text, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
             using (Font f2 = new Font("Segoe UI", 9f))
             {
-                TextRenderer.DrawText(g, detail, f2, new Rectangle(tx, Dpi.S(27), Math.Max(Dpi.S(10), Width - tx - Dpi.S(22)), Dpi.S(28)), Theme.Text2, TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.NoPadding | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis);
+                TextRenderer.DrawText(g, detail, f2, new Rectangle(tx, Dpi.S(27), Math.Max(Dpi.S(10), Width - tx - Dpi.S(22)), Dpi.S(28)), Theme.Text2, TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.NoPadding | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
                 if (state == "run")
                 {
                     int secs = (int)(DateTime.UtcNow - started).TotalSeconds;
@@ -4974,7 +5036,7 @@ namespace FiveMFrameCap
                 using (Pen pen = new Pen(border)) g.DrawPath(pen, p);
             }
             string s = SelectedItem ?? "";
-            TextRenderer.DrawText(g, s, Font, new Rectangle(Dpi.S(10), 0, Width - Dpi.S(44), Height), Enabled ? Theme.Text : Theme.Text2, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
+            TextRenderer.DrawText(g, s, Font, new Rectangle(Dpi.S(10), 0, Width - Dpi.S(44), Height), Enabled ? Theme.Text : Theme.Text2, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
             Gfx.Glyph(g, Ico.Chevron, new Rectangle(Width - Dpi.S(32), 0, Dpi.S(24), Height), Theme.Text2, 9f);
         }
     }
@@ -5032,9 +5094,13 @@ namespace FiveMFrameCap
 
         void Commit()
         {
-            decimal v;
-            if (decimal.TryParse(tb.Text, out v)) Value = v; else tb.Text = val.ToString();
+            int v;   // digits only, the same in every Windows language (a pasted "45,5" or "1.5" is not a number here)
+            if (int.TryParse(tb.Text, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out v)) Value = v; else tb.Text = val.ToString();
         }
+
+        // for --review-test
+        public void TestType(string text) { tb.Text = text; Commit(); }
+        public string TestShown() { return tb.Text; }
 
         void Bump(int d) { Commit(); Value = val + d; tb.SelectAll(); }
 
@@ -5203,7 +5269,7 @@ namespace FiveMFrameCap
 
         public static ToolStripMenuItem Item(string text, bool check)
         {
-            ToolStripMenuItem it = new ToolStripMenuItem(text);
+            ToolStripMenuItem it = new ToolStripMenuItem(text.Replace("&", "&&"));
             it.Checked = check; it.ForeColor = Theme.Text; it.BackColor = Theme.Bg3;
             it.Padding = new Padding(Dpi.S(2), Dpi.S(5), Dpi.S(2), Dpi.S(5));
             return it;
@@ -5320,7 +5386,7 @@ namespace FiveMFrameCap
             Draggable(TitleBar);
             Image img = null;
             Icon ic = Info.AppIcon();
-            if (ic != null) { try { img = new Bitmap(ic.ToBitmap(), Dpi.S(18), Dpi.S(18)); } catch (Exception) { } }
+            if (ic != null) { try { using (Bitmap full = ic.ToBitmap()) img = new Bitmap(full, Dpi.S(18), Dpi.S(18)); } catch (Exception) { } }
             if (img != null)
             {
                 iconBox = new PictureBox(); iconBox.Image = img; iconBox.SizeMode = PictureBoxSizeMode.CenterImage; iconBox.BackColor = Color.Transparent;
@@ -5595,9 +5661,11 @@ namespace FiveMFrameCap
             refreshTimer = new System.Windows.Forms.Timer(); refreshTimer.Interval = 200;
             refreshTimer.Tick += delegate { if (dirty) { dirty = false; Rebuild(); } };
             refreshTimer.Start();
+            Action onTheme = delegate { dirty = true; };   // the colours of the log are baked into its text: a new theme draws it again
+            Theme.Changed += onTheme;
             AppLog.Added += OnAdded;
             AppLog.GroupEnded += OnGroupEnded;
-            Disposed += delegate { AppLog.Added -= OnAdded; AppLog.GroupEnded -= OnGroupEnded; refreshTimer.Stop(); tip.Dispose(); };
+            Disposed += delegate { Theme.Changed -= onTheme; AppLog.Added -= OnAdded; AppLog.GroupEnded -= OnGroupEnded; refreshTimer.Stop(); tip.Dispose(); };
             VisibleChanged += delegate { if (Visible) dirty = true; };
             Resize += delegate { dirty = true; };
             box.HandleCreated += delegate { dirty = true; };
@@ -5652,7 +5720,8 @@ namespace FiveMFrameCap
             return sb.ToString();
         }
 
-        static bool IsProblem(string s) { return Severity(s) >= 3; }
+        // the severity of an entry is worked out once (it takes up to five pattern matches, and the whole log is drawn again for every new line)
+        static int SevOf(LogEntry e) { if (e.Sev < 0) e.Sev = Severity(e.Message); return e.Sev; }
 
         static Color SevColor(int sev)
         {
@@ -5684,6 +5753,26 @@ namespace FiveMFrameCap
 
         static string Cw(string s) { return s.Replace('~', (char)92); }
 
+        // One entry is one line: a message with line breaks (a stack trace) is flattened. The text that is counted (plain) must be as long as the text in the box, or the places
+        // of the fold headers drift. Esc drops control characters, so they are taken out here too.
+        static string Flat(string s)
+        {
+            if (s == null) return "";
+            StringBuilder b = new StringBuilder(s.Length);
+            foreach (char c in s) { if (c == '\r' || c == '\n') b.Append(' '); else if (c >= ' ' || c == '\t') b.Append(c); }
+            return b.ToString();
+        }
+
+        // for --review-test: every fold header starts where the program thinks it does
+        public bool TestHeadersLineUp()
+        {
+            string tx = box.Text;
+            if (headerRanges.Count == 0) return false;
+            foreach (int[] r in headerRanges)
+                if (r[0] < 0 || r[0] + 3 > tx.Length || (string.CompareOrdinal(tx, r[0], "[+]", 0, 3) != 0 && string.CompareOrdinal(tx, r[0], "[-]", 0, 3) != 0)) return false;
+            return true;
+        }
+
         static string Esc(string s)
         {
             StringBuilder sb = new StringBuilder();
@@ -5713,6 +5802,7 @@ namespace FiveMFrameCap
 
         void AddLine(StringBuilder rtf, StringBuilder plain, LogEntry e, string marker, string message, int headerGroup, int sev)
         {
+            message = Flat(message);
             int msgTw = Tw(28);
             int cTool = e.Tool == "Frame cap" ? 3 : e.Tool == "DNS" ? 4 : e.Tool == "FiveM cache" ? 5 : e.Tool == "Graphics" ? 13 : 6;
             int cMsg = (e.Debug && sev < 4) ? 1 : sev <= 0 ? 2 : 7 + sev;
@@ -5753,20 +5843,20 @@ namespace FiveMFrameCap
                 int n = j - i;
                 if (g == 0 || n == 1)
                 {
-                    for (int k = i; k < j; k++) AddLine(rtf, plain, list[k], "", list[k].Message, 0, Severity(list[k].Message));
+                    for (int k = i; k < j; k++) AddLine(rtf, plain, list[k], "", list[k].Message, 0, SevOf(list[k]));
                 }
                 else
                 {
                     bool done = AppLog.IsDone(g), problem = false;
-                    int gsev = 0; for (int k = i; k < j; k++) { int sv = Severity(list[k].Message); if (list[k].Debug && sv < 4) sv = 0; if (sv > gsev) gsev = sv; if (sv >= 3) problem = true; }
+                    int gsev = 0; for (int k = i; k < j; k++) { int sv = SevOf(list[k]); if (list[k].Debug && sv < 4) sv = 0; if (sv > gsev) gsev = sv; if (sv >= 3) problem = true; }
                     bool stay = false;
                     if (StayOpenOnTab) lock (seenGen) { int sg; if (!seenGen.TryGetValue(g, out sg)) { sg = tabGen; seenGen[g] = sg; } stay = sg == tabGen; }
                     bool open = expanded.ContainsKey(g) ? expanded[g] : (!done || problem || stay);
                     openNow[g] = open;
                     if (open)
                     {
-                        AddLine(rtf, plain, list[i], "[-]", list[i].Message, g, Severity(list[i].Message));
-                        for (int k = i + 1; k < j; k++) AddLine(rtf, plain, list[k], "", list[k].Message, 0, Severity(list[k].Message));
+                        AddLine(rtf, plain, list[i], "[-]", list[i].Message, g, SevOf(list[i]));
+                        for (int k = i + 1; k < j; k++) AddLine(rtf, plain, list[k], "", list[k].Message, 0, SevOf(list[k]));
                     }
                     else
                     {
@@ -5816,7 +5906,7 @@ namespace FiveMFrameCap
             Font = new Font("Segoe UI", 9.5f);
             Panel holder = new Panel(); holder.Dock = DockStyle.Fill; holder.Padding = new Padding(14, 8, 14, 10); holder.Tag = "body"; Body.Controls.Add(holder);
             holder.Controls.Add(new LogPanel(true, false));
-            Label where = new Label(); where.Text = Loc.T("Log file: ") + AppLog.FilePath; where.Tag = "muted"; where.AutoEllipsis = true; where.Dock = DockStyle.Bottom; where.Height = 26; where.TextAlign = ContentAlignment.MiddleLeft;
+            Label where = new Label(); where.Text = Loc.T("Log file: ") + AppLog.FilePath; where.Tag = "muted"; where.AutoEllipsis = true; where.UseMnemonic = false; where.Dock = DockStyle.Bottom; where.Height = 26; where.TextAlign = ContentAlignment.MiddleLeft;
             holder.Controls.Add(where);
             Theme.Changed += OnTheme;
             FormClosed += delegate { Theme.Changed -= OnTheme; };
@@ -5980,7 +6070,6 @@ namespace FiveMFrameCap
             Theme.Apply(this);
         }
 
-        public bool GoEnabled { get { return go.Enabled; } }
     }
 
     // ---------------------------------------------------------------- "Why is 140 the highest?"
@@ -6068,6 +6157,7 @@ namespace FiveMFrameCap
         List<Gpu> gpus = new List<Gpu>();
         string mode = "none";   // amd, nvidia, none
         bool busy = false;
+        bool readOnlyJob = false;   // the running job only reads (the search): the window may be closed then
         bool inDeepChange = false;
         const int CardW = 950;
 
@@ -6205,7 +6295,7 @@ namespace FiveMFrameCap
             BuildCachePage();
             BuildGfxPage();
 
-            runTimer = new System.Windows.Forms.Timer(); runTimer.Interval = 2000; runTimer.Tick += delegate { if (pageCache.Visible && !busy) UpdateRunning(); if (pageDns.Visible && !busy) RefreshDnsCount(); if (pageGfx.Visible && !busy) { UpdateGfxRunning(); StartVramRead(); } }; runTimer.Start();
+            runTimer = new System.Windows.Forms.Timer(); runTimer.Interval = 2000; runTimer.Tick += delegate { if (WindowState == FormWindowState.Minimized) return; if (pageCache.Visible && !busy) UpdateRunning(); if (pageDns.Visible && !busy) RefreshDnsCount(); if (pageGfx.Visible && !busy) { UpdateGfxRunning(); StartVramRead(); } }; runTimer.Start();
 
             Theme.Changed += OnThemeChanged;
             FormClosed += delegate { Theme.Changed -= OnThemeChanged; runTimer.Stop(); tip.Dispose(); };
@@ -6290,7 +6380,7 @@ namespace FiveMFrameCap
             int bw1 = FitW("Search again", 132), bw2 = FitW("Pick a folder ...", 160), bw3 = FitW("Backups", 110); rescanBtn = Btn(Ico.Search, "Search again", 16, 206, bw1, 36); rescanBtn.Click += delegate { Rescan(null); }; cBuilds.Controls.Add(rescanBtn);
             browseBtn = Btn(Ico.Folder, "Pick a folder ...", 16 + bw1 + 10, 206, bw2, 36); browseBtn.Click += BrowseClick; cBuilds.Controls.Add(browseBtn);
             backupBtn = Btn(Ico.OpenFolder, "Backups", 16 + bw1 + 10 + bw2 + 10, 206, bw3, 36);
-            backupBtn.Click += delegate { try { Directory.CreateDirectory(Blb.BackupDir); Process.Start("explorer.exe", Blb.BackupDir); } catch (Exception) { } };
+            backupBtn.Click += delegate { try { Directory.CreateDirectory(Blb.BackupDir); Process.Start("explorer.exe", "\"" + Blb.BackupDir + "\""); } catch (Exception) { } };
             cBuilds.Controls.Add(backupBtn);
             int bw5 = FitW("Reset the list", 130);
             int bw4r = FitW("Undo last change", 190); resetBtn = Btn(Ico.Refresh, "Reset the list", CardW - 16 - bw4r - 10 - bw5, 206, bw5, 36); resetBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right; resetBtn.Click += ResetClick;
@@ -6389,6 +6479,7 @@ namespace FiveMFrameCap
         {
             if (busy) return;
             SetBusy(true);
+            readOnlyJob = true;
             if (!quiet) JobStart(Loc.T("Searching for FiveM ..."));
             Thread t = new Thread(delegate()
             {
@@ -6437,12 +6528,11 @@ namespace FiveMFrameCap
                         if (Finder.LastNew.Contains(xb.Exe)) { Log("New FiveM build: " + xb.FileName + " (" + xb.Status + ")"); if (xb.Status.StartsWith("Not in Radeon")) needRadeon = true; }
                     if (found.Count == 0) Log("No FiveM build found. Use \"Pick a folder ...\" and choose the folder where FiveM is installed.");
                     else Log(found.Count + " FiveM build(s) found.");
-                    BeginInvoke(new Action(delegate
+                    Ui(delegate
                     {
-                        gpus = g; ShowGpus(modeText);
-                        builds = found; FillBuilds(); FillRoots(roots);
-                        SetBusy(false);
-                    }));
+                        try { gpus = g; ShowGpus(modeText); builds = found; FillBuilds(); FillRoots(roots); }
+                        finally { SetBusy(false); }   // a failure while the list is filled must not leave the window busy for ever
+                    });
                     if (resetRemoved >= 0)
                     {
                         int rr = resetRemoved; resetRemoved = -1;
@@ -6468,8 +6558,9 @@ namespace FiveMFrameCap
                 catch (Exception ex)
                 {
                     Log("Error while searching: " + ex.Message); AppLog.Debug("exception while searching: " + ex);
+                    resetRemoved = -1;
                     if (!quiet) JobDone("bad", Loc.T("It did not finish"), ex.Message);
-                    BeginInvoke(new Action(delegate { SetBusy(false); }));
+                    Ui(delegate { SetBusy(false); });
                 }
                 finally { AppLog.EndGroup(); }
             });
@@ -6646,8 +6737,8 @@ namespace FiveMFrameCap
                         Build bb = b;
                         BeginInvoke(new Action(delegate { MarkRow(bb, Loc.T("Working ..."), 0); }));
                         string res = before != null ? cw.Revert(b, before[0], before[1]) : "Nothing to undo: the cap is already back.";
-                        GpuPref.Undo(b.Exe, Log);
                         int kind = res.StartsWith("Cap put back") ? 1 : res.StartsWith("Nothing to undo") ? 2 : 0;
+                        if (kind != 0) GpuPref.Undo(b.Exe, Log);   // when the cap could not be put back, the graphics preference stays too, so Undo can be tried again
                         if (kind == 1)
                         {
                             nBack++;
@@ -7708,10 +7799,25 @@ namespace FiveMFrameCap
             logForm.BringToFront();
         }
 
+        // The window cannot be closed while a job changes something: Radeon Software would stay closed, a file would stay half written. A search only reads, so it may be closed.
+        public static bool TestQuiet = false;   // for --review-test: no message box
+        public bool TestBusy(bool on, bool scan) { readOnlyJob = scan; busy = on; return busy; }
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            if (busy && !readOnlyJob && e.CloseReason == CloseReason.UserClosing)
+            {
+                e.Cancel = true;
+                if (!TestQuiet) MessageBox.Show(this, Loc.T("A job is still running. Wait until it has finished, then close the window."), Text);
+                return;
+            }
+            base.OnFormClosing(e);
+        }
+
         void SetBusy(bool b)
         {
             busy = b;
-            resetBtn.Enabled = !b; gfxApply.Enabled = !b; gfxClose.Enabled = !b; gfxHighest.Enabled = !b; gfxNormal.Enabled = !b; applyBtn.Enabled = !b && (mode == "amd" || mode == "nvidia"); undoBtn.Enabled = !b && (mode == "amd" || mode == "nvidia"); rescanBtn.Enabled = !b; tidyBtn.Enabled = !b; browseBtn.Enabled = !b; capBox.Enabled = !b; whyBtn.Enabled = true;
+            if (!b) readOnlyJob = false;
+            resetBtn.Enabled = !b; gfxApply.Enabled = !b; gfxClose.Enabled = !b; gfxHighest.Enabled = !b; gfxNormal.Enabled = !b; applyBtn.Enabled = !b && (mode == "amd" || mode == "nvidia"); undoBtn.Enabled = !b && (mode == "amd" || mode == "nvidia"); rescanBtn.Enabled = !b; tidyBtn.Enabled = !b; browseBtn.Enabled = !b; capBox.Enabled = !b;
             dnsFlush.Enabled = !b; dnsSet.Enabled = !b; dnsUndo.Enabled = !b; dnsRefresh.Enabled = !b; cbExtraFlush.Enabled = !b;
             cacheClean.Enabled = !b; cacheWipe.Enabled = !b; resetSwitch.Enabled = !b; gpuSwitch.Enabled = !b; cacheRefresh.Enabled = !b; cacheClose.Enabled = !b; cacheRoots.Enabled = !b; cacheStart.Enabled = !b && canStart; cacheIcon.Enabled = !b && CurrentRoot() != null && CacheTool.FiveMExe(CurrentRoot()) != null;
         }
@@ -8223,6 +8329,10 @@ namespace FiveMFrameCap
             new string[] { "Making the profile in Radeon Software ...", "Het profiel maken in Radeon Software ...", "Das Profil in Radeon Software erstellen ...", "Création du profil dans Radeon Software ...", "Creando el perfil en Radeon Software ..." },
             new string[] { "Putting the build in the list of games ...", "De build in de lijst met spellen zetten ...", "Den Build in die Spieleliste eintragen ...", "Ajout de la build à la liste des jeux ...", "Añadiendo la build a la lista de juegos ..." },
             new string[] { "Taking the profile out of Radeon Software ...", "Het profiel uit Radeon Software halen ...", "Das Profil aus Radeon Software entfernen ...", "Retrait du profil de Radeon Software ...", "Quitando el perfil de Radeon Software ..." },
+            new string[] { "Could not close Radeon Software. Nothing was changed.", "Radeon Software kon niet worden gesloten. Er is niets veranderd.", "Radeon Software konnte nicht geschlossen werden. Es wurde nichts geändert.", "Radeon Software n'a pas pu être fermé. Rien n'a été modifié.", "No se pudo cerrar Radeon Software. No se cambió nada." },
+            new string[] { "The AMD library is not ready (Radeon Software may be starting). Nothing was changed. Try again in a moment.", "De AMD-bibliotheek is nog niet klaar (Radeon Software start misschien nog op). Er is niets veranderd. Probeer het zo meteen opnieuw.", "Die AMD-Bibliothek ist noch nicht bereit (Radeon Software startet vielleicht noch). Es wurde nichts geändert. Versuche es gleich noch einmal.", "La bibliothèque AMD n'est pas prête (Radeon Software démarre peut-être encore). Rien n'a été modifié. Réessaie dans un instant.", "La biblioteca de AMD no está lista (puede que Radeon Software esté arrancando). No se cambió nada. Inténtalo de nuevo en un momento." },
+            new string[] { "Undo skipped: the old value was saved for another graphics driver. Nothing was changed.", "Ongedaan maken overgeslagen: de oude waarde is voor een ander grafisch stuurprogramma bewaard. Er is niets veranderd.", "Rückgängig übersprungen: Der alte Wert wurde für einen anderen Grafiktreiber gespeichert. Es wurde nichts geändert.", "Annulation ignorée : l'ancienne valeur a été enregistrée pour un autre pilote graphique. Rien n'a été modifié.", "Deshacer omitido: el valor anterior se guardó para otro controlador gráfico. No se cambió nada." },
+            new string[] { "A job is still running. Wait until it has finished, then close the window.", "Er loopt nog een taak. Wacht tot die klaar is en sluit dan het venster.", "Es läuft noch eine Aufgabe. Warte, bis sie fertig ist, und schließe dann das Fenster.", "Une tâche est encore en cours. Attends qu'elle soit terminée, puis ferme la fenêtre.", "Todavía hay una tarea en curso. Espera a que termine y luego cierra la ventana." },
             new string[] { "Put back {0} build(s): they are not in Radeon Software any more. Radeon Software was restarted.", "{0} build(s) teruggezet: ze staan niet meer in Radeon Software. Radeon Software is opnieuw gestart.", "{0} Build(s) zurückgesetzt: sie sind nicht mehr in Radeon Software. Radeon Software wurde neu gestartet.", "{0} build(s) rétablie(s) : elles ne sont plus dans Radeon Software. Radeon Software a été redémarré.", "{0} build(s) restaurada(s): ya no están en Radeon Software. Se reinició Radeon Software." },
             new string[] { "Network card", "Netwerkkaart", "Netzwerkkarte", "Carte réseau", "Tarjeta de red" },
             new string[] { "Speed", "Snelheid", "Geschwindigkeit", "Vitesse", "Velocidad" },
@@ -8969,6 +9079,10 @@ namespace FiveMFrameCap
         [STAThread]
         static int Main(string[] args)
         {
+            // Anything that goes wrong without a handler still ends up in the log file (from the very first line: a failure while the program starts is logged too).
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+            Application.ThreadException += delegate(object sender0, ThreadExceptionEventArgs te0) { AppLog.Add("Unexpected error: " + te0.Exception.Message); AppLog.Debug("unhandled UI exception: " + te0.Exception); };
+            AppDomain.CurrentDomain.UnhandledException += delegate(object sender1, UnhandledExceptionEventArgs ue1) { AppLog.Add("Unexpected error: " + ue1.ExceptionObject); };
             // test mode: --pretend-vram <MB> anywhere in the arguments (for looking at the advice for a small card on a PC with a big one); it is taken out of the arguments here
             List<string> pvArgs = new List<string>();
             for (int pvI = 0; pvI < args.Length; pvI++)
@@ -9415,6 +9529,49 @@ namespace FiveMFrameCap
                     ck(CapMemory.Get(td3570.Exe) == null, "the Undo memory of the removed build is gone");
                     ck(Tidy.Look(tdBuilds, true, nlog, out tdRefuse).Count == 0 && tdRefuse == null, "a second look finds nothing old");
 
+                    // ---- the review fixes
+                    // our profile that also holds another program is not touched, even when its build is not on disk
+                    NvFakeDrs.Committed = new List<NvFakeDrs.Prof>();
+                    NvFakeDrs.Prof rvMixed = tdMk(NvWorker.ProfileNameFor("FiveM_b0900_GTAProcess.exe"), "FiveM_b0900_GTAProcess.exe", 140, 0); rvMixed.Apps.Add("notepad.exe");
+                    NvFakeDrs.Committed.Add(rvMixed);
+                    ck(Tidy.Look(tdBuilds, true, nlog, out tdRefuse).Count == 0, "our profile that also holds another program is left alone");
+                    // a build that the list does not show now, that Undo remembers and that is on disk: its profile stays
+                    string rvReal = Path.Combine(tmp, "FiveM_b0901_GTAProcess.exe"); File.WriteAllBytes(rvReal, new byte[] { 1 });
+                    NvFakeDrs.Committed = new List<NvFakeDrs.Prof>(); NvFakeDrs.Committed.Add(tdMk(NvWorker.ProfileNameFor("FiveM_b0901_GTAProcess.exe"), "FiveM_b0901_GTAProcess.exe", 140, 0));
+                    ck(Tidy.Look(tdBuilds, true, nlog, out tdRefuse).Count == 1, "a build that is not in the list and not remembered: its profile is old (control)");
+                    CapMemory.Save(rvReal, "nv::-1;;", "nv::-1;;");
+                    ck(Tidy.Look(tdBuilds, true, nlog, out tdRefuse).Count == 0, "the same build, remembered by Undo and on disk: its profile stays");
+                    CapMemory.Remove(rvReal);
+                    // no copy of the driver database: nothing is removed
+                    string rvFile = Path.Combine(tmp, "iamafile"); File.WriteAllText(rvFile, "x");
+                    List<TidyItem> rvOld = Tidy.Look(tdBuilds, true, nlog, out tdRefuse);
+                    string rvKeep = NvApi.BackupTo; NvApi.BackupTo = Path.Combine(rvFile, "sub");
+                    string rvSnap = NvFakeDrs.Dump();
+                    tdProblem = Tidy.Remove(rvOld, nlog, out tdRemoved);
+                    NvApi.BackupTo = rvKeep;
+                    ck(rvOld.Count == 1 && tdProblem != null && tdRemoved == 0 && NvFakeDrs.Dump() == rvSnap, "the copy of the driver database failed: no profile is removed (" + tdProblem + ")");
+                    tdProblem = Tidy.Remove(rvOld, nlog, out tdRemoved);
+                    ck(tdProblem == null && tdRemoved == 1, "the copy works again: the old profile is removed");
+                    // a profile that is not ours is never deleted, even when it is handed over
+                    NvFakeDrs.Committed = new List<NvFakeDrs.Prof>(); NvFakeDrs.Committed.Add(tdMk("Some Game", "somegame.exe", 60, 3));
+                    TidyItem rvForeign = new TidyItem(); rvForeign.Kind = "nvidia"; rvForeign.Name = "Some Game"; rvForeign.Why = Tidy.WhyGone; rvForeign.Apps.Add("somegame.exe");
+                    tdProblem = Tidy.Remove(new List<TidyItem>(new TidyItem[] { rvForeign }), nlog, out tdRemoved);
+                    ck(tdRemoved == 0 && byName("Some Game") != null, "a profile that does not start with our prefix is not deleted");
+                    // a profile that the driver ignores: it is removed, and the Undo memory (it belongs to the profile the driver really uses) stays
+                    Build rvB = mk("FiveM_b0902_GTAProcess.exe"); CapMemory.Save(rvB.Exe, "nv::-1;;", "nv::-1;;");
+                    NvFakeDrs.Committed = new List<NvFakeDrs.Prof>(); NvFakeDrs.Committed.Add(tdMk(NvWorker.ProfileNameFor(rvB.FileName), rvB.FileName, 140, 0));
+                    TidyItem rvIgn = new TidyItem(); rvIgn.Kind = "nvidia"; rvIgn.Name = NvWorker.ProfileNameFor(rvB.FileName); rvIgn.Why = Tidy.WhyIgnored; rvIgn.Apps.Add(rvB.FileName);
+                    tdProblem = Tidy.Remove(new List<TidyItem>(new TidyItem[] { rvIgn }), nlog, out tdRemoved);
+                    ck(tdRemoved == 1 && CapMemory.Get(rvB.Exe) != null, "a profile that the driver ignores is removed, and the Undo memory of that build stays");
+                    CapMemory.Remove(rvB.Exe);
+                    // Undo with a value that was saved for the other kind of graphics driver does nothing
+                    r = nw.Revert(mk("FiveM_b0903_GTAProcess.exe"), "0x0300::140;;0x0e00::140;;", "0x0300::140;;0x0e00::140;;");
+                    ck(r.StartsWith("Undo skipped"), "NVIDIA: Undo with a value saved for Radeon Software is skipped -> " + r);
+                    r = nw.Revert(mk("FiveM_b0903_GTAProcess.exe"), null, null);
+                    ck(r.StartsWith("Undo skipped"), "NVIDIA: Undo with no saved value is skipped -> " + r);
+                    r = new Worker().Revert(mk("FiveM_b0903_GTAProcess.exe"), "nv::-1;;", "nv::-1;;");
+                    ck(r.StartsWith("Undo skipped"), "Radeon: Undo with a value saved for NVIDIA is skipped -> " + r);
+
                     ck(NvDrsNative.SettingVer == 0x13020 && NvDrsNative.ProfileVer == 0x11014 && NvDrsNative.AppVer[0] == 0x4500C && NvDrsNative.AppVer[1] == 0x3400C && NvDrsNative.AppVer[2] == 0x24008, "the struct versions equal the numbers in NVIDIA's header");
                     ck(NvDrsNative.SetCur + 4100 == NvDrsNative.SettingSize && NvDrsNative.SetId == 4 + NvDrsNative.Str, "the setting struct offsets add up to its size (12320)");
                     ck(NvApi.FrlFpsId == 0x10835002u, "the frame limit setting number is 0x10835002");
@@ -9448,6 +9605,10 @@ namespace FiveMFrameCap
                     new string[] { "AMD", "AMD Radeon RX 6800M", "dedicated" },
                     new string[] { "AMD", "AMD Radeon RX 7600M XT", "dedicated" },
                     new string[] { "AMD", "AMD Radeon RX Vega 56", "dedicated" },
+                    new string[] { "AMD", "AMD Radeon RX Vega 64", "dedicated" },
+                    new string[] { "AMD", "AMD Radeon R9 380 Series", "dedicated" },
+                    new string[] { "AMD", "AMD Radeon(TM) RX Vega 11 Graphics", "integrated" },    // the chip inside a Ryzen 5 2400G / 3400G
+                    new string[] { "AMD", "AMD Radeon(TM) R7 Graphics", "integrated" },            // the chip inside an A10-7850K
                     new string[] { "AMD", "AMD Radeon(TM) Pro WX 3200", "dedicated" },
                     new string[] { "AMD", "AMD Radeon HD 7970", "dedicated" },
                     new string[] { "NVIDIA", "NVIDIA GeForce RTX 4060 Laptop GPU", "dedicated" },
@@ -10047,10 +10208,6 @@ namespace FiveMFrameCap
             Theme.Init();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            // Anything that goes wrong without a handler still ends up in the log file.
-            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
-            Application.ThreadException += delegate(object s, ThreadExceptionEventArgs e) { AppLog.Add("Unexpected error: " + e.Exception.Message); AppLog.Debug("unhandled UI exception: " + e.Exception); };
-            AppDomain.CurrentDomain.UnhandledException += delegate(object s, UnhandledExceptionEventArgs e) { AppLog.Add("Unexpected error: " + e.ExceptionObject); };
             if (args.Length >= 1 && args[0] == "--reset-form-test")
             {
                 // --reset-form-test <outfile>: the rules of the big warning window
@@ -10218,7 +10375,7 @@ namespace FiveMFrameCap
                             if (args.Length >= 4 && args[3] == "full")
                             {
                                 // the whole way through the real Apply and Undo code, with Radeon Software closed and started by the worker itself
-                                asb.AppendLine("        (full: Apply and Undo of a made-up build, Radeon Software is restarted twice)");
+                                asb.AppendLine("        (full: Apply, a second Apply and Undo of a made-up build, Radeon Software is restarted three times)");
                                 string capFile2 = Path.Combine(Path.GetTempPath(), "fivemtoolbox-amdfull-" + Guid.NewGuid().ToString("N") + ".txt");
                                 CapMemory.PathOverride = capFile2;
                                 HashSet<string> bkBefore = new HashSet<string>();
@@ -10240,6 +10397,12 @@ namespace FiveMFrameCap
                                     ack(fm != null && fm[0] == Worker.NewMarker, "the build is remembered as added by this tool");
                                     ack(listBefore == null || GameList.VisibleInFile(fb.Exe), "the build shows in Radeon Software's list of games");
                                     ack(listBefore == null || (fm != null && fm[1] == Worker.NewMarker + Worker.ListMark), "the memory says that the list was changed too");
+                                    string ar2 = fw.Apply(fb, 90);
+                                    ack(ar2 == "Set to 90.", "a second Apply (another cap) says: " + ar2);
+                                    Adl.ProfileValues fv2 = Adl.Read(fb.FileName, fb.Dir);
+                                    ack(fv2.Found && Val.First(fv2.Min) == 90 && Val.First(fv2.Max) == 90, "AMD reports the cap 90 after the second Apply (" + fv2.Min + ")");
+                                    fm = CapMemory.Get(fb.Exe);
+                                    ack(fm != null && fm[0] == Worker.NewMarker && (listBefore == null || fm[1] == Worker.NewMarker + Worker.ListMark), "the second Apply keeps the note that this tool added the build, so Undo takes it out again");
                                     Worker uw = new Worker(); uw.Log = fw.Log;
                                     string ur = uw.Revert(fb, fm != null ? fm[0] : "", fm != null ? fm[1] : "");
                                     ack(ur != null && ur.StartsWith("Cap put back"), "Undo says: " + ur);
@@ -10320,6 +10483,101 @@ namespace FiveMFrameCap
                 cs.AppendLine(cfail == 0 ? "ALL PASSED" : "FAILED: " + cfail);
                 File.WriteAllText(args[1], cs.ToString());
                 return cfail == 0 ? 0 : 1;
+            }
+            if (args.Length >= 2 && args[0] == "--review-test")
+            {
+                // --review-test <outfile>: the fixes of the review for bugs, security, speed and dead code (scratch files and hidden windows only; nothing on this PC is changed)
+                StringBuilder rs = new StringBuilder();
+                int rfail = 0;
+                Action<bool, string> rck = delegate(bool good, string what) { if (!good) rfail++; rs.AppendLine((good ? "PASS  " : "FAIL  ") + what); };
+                string rtmp = Path.Combine(Path.GetTempPath(), "fivemtoolbox-reviewtest-" + Guid.NewGuid().ToString("N"));
+                try
+                {
+                    Directory.CreateDirectory(rtmp);
+                    Action rpump = delegate { for (int pi = 0; pi < 8; pi++) { Application.DoEvents(); Thread.Sleep(30); } };
+                    // SafeIo: the new text takes the place of the old one, no side file stays, a bad character does not throw
+                    string sf = Path.Combine(rtmp, "small.txt");
+                    SafeIo.WriteLines(sf, new string[] { "one", "two" });
+                    rck(File.ReadAllText(sf) == "one\r\ntwo\r\n" && !File.Exists(sf + ".new"), "SafeIo: a new file is written and no side file stays");
+                    SafeIo.WriteText(sf, "new" + (char)0xD800 + "text");
+                    string sback = File.ReadAllText(sf);
+                    rck(sback.StartsWith("new") && sback.EndsWith("text") && !File.Exists(sf + ".new"), "SafeIo: a lone surrogate does not throw, and the old file is replaced");
+                    bool sthrew = false;
+                    try { SafeIo.WriteText(Path.Combine(rtmp, "nodir", "x.txt"), "x"); } catch (Exception) { sthrew = true; }
+                    rck(sthrew && !Directory.Exists(Path.Combine(rtmp, "nodir")), "SafeIo: a folder that is not there is an error and nothing is made");
+                    File.SetAttributes(sf, FileAttributes.ReadOnly);
+                    sthrew = false;
+                    try { SafeIo.WriteText(sf, "changed"); } catch (Exception) { sthrew = true; }
+                    File.SetAttributes(sf, FileAttributes.Normal);
+                    rck(sthrew && File.ReadAllText(sf).StartsWith("new") && !File.Exists(sf + ".new"), "SafeIo: a file that cannot be replaced stays as it was and leaves no side file");
+
+                    // the log file takes lines from many threads at once
+                    string rmark = "RVTEST-" + Guid.NewGuid().ToString("N");
+                    Thread[] rth = new Thread[8];
+                    for (int ti = 0; ti < rth.Length; ti++) { int tid = ti; rth[ti] = new Thread(delegate() { AppLog.Context = "General"; for (int k = 0; k < 60; k++) AppLog.Debug(rmark + " " + tid + " " + k); }); rth[ti].Start(); }
+                    foreach (Thread rt in rth) rt.Join();
+                    int inFile = 0;
+                    foreach (string ln in File.ReadAllLines(AppLog.FilePath)) if (ln.Contains(rmark)) inFile++;
+                    rck(inFile == 480, "the log file keeps every line when 8 threads write at once (" + inFile + " of 480)");
+
+                    // DLLs come from the Windows folder only
+                    object[] dll = Assembly.GetExecutingAssembly().GetCustomAttributes(typeof(DefaultDllImportSearchPathsAttribute), false);
+                    rck(dll.Length == 1 && ((DefaultDllImportSearchPathsAttribute)dll[0]).Paths == DllImportSearchPath.System32, "every DllImport loads from the Windows folder only");
+                    rck(Adl.Available() || !Radeon.Installed(), "the AMD library still loads from the Windows folder (or Radeon Software is not on this PC)");
+
+                    // the list of games of Radeon Software that cannot be read is an error text, not a crash (and not a reason to undo a cap that works)
+                    string glf = Path.Combine(rtmp, "gmdb.blb"); File.WriteAllText(glf, "{ \"games\": [] }");
+                    GameList.PathOverride = glf;
+                    bool gch; string gwhat;
+                    using (FileStream gl = new FileStream(glf, FileMode.Open, FileAccess.Read, FileShare.None))
+                    {
+                        string gerr = GameList.ShowInFile(@"C:\x\FiveM_b9_GTAProcess.exe", "FiveM_b9_GTAProcess", out gch, out gwhat);
+                        rck(gerr != null && !gch, "GameList: a list that cannot be read gives an error text, no crash (" + gerr + ")");
+                    }
+                    GameList.PathOverride = null;
+
+                    // the log: the places of the fold headers fit the text, also after a message with line breaks
+                    Theme.Force("dark"); Loc.Force("en");
+                    Form lhost = new Form(); lhost.Width = 900; lhost.Height = 500;
+                    LogPanel lpn = new LogPanel(true, false); lhost.Controls.Add(lpn); lhost.Show(); rpump();
+                    AppLog.Debug("rvboom: System.Exception: x" + "\r\n   at A.B()" + "\r\n   at C.D()");
+                    AppLog.BeginGroup(); AppLog.Add("rvbeta one"); AppLog.Add("rvbeta two"); AppLog.Add("rvbeta three"); AppLog.EndGroup();
+                    lpn.TestRebuild();
+                    string ltx = lpn.TestText();
+                    rck(ltx.Contains("rvbeta one   ->   rvbeta three   (3 lines)"), "the log shows the folded job");
+                    rck(lpn.TestHeadersLineUp(), "the places of the fold headers fit the text after a message with line breaks");
+                    rck(ltx.Contains("System.Exception: x     at A.B()"), "a message with line breaks is one line");
+                    lhost.Close();
+
+                    // the number box takes digits only, whatever the Windows language
+                    Thread.CurrentThread.CurrentCulture = new System.Globalization.CultureInfo("nl-NL");
+                    NumBox nbx = new NumBox(); nbx.Minimum = 30; nbx.Maximum = 140; nbx.Value = 100;
+                    nbx.TestType("45,5"); rck(nbx.Value == 100 && nbx.TestShown() == "100", "NumBox: a pasted 45,5 is refused (Dutch Windows)");
+                    nbx.TestType("1.5"); rck(nbx.Value == 100 && nbx.TestShown() == "100", "NumBox: a pasted 1.5 is refused (Dutch Windows)");
+                    nbx.TestType("45"); rck(nbx.Value == 45, "NumBox: 45 is taken");
+                    Thread.CurrentThread.CurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
+
+                    // the window cannot be closed while a job changes something; a search may be closed
+                    MainForm.TestQuiet = true;
+                    MainForm cf = new MainForm(0); cf.Show();
+                    DateTime cfEnd = DateTime.UtcNow.AddSeconds(40);
+                    while (DateTime.UtcNow < cfEnd && (cf.IsBusy || DateTime.UtcNow < cfEnd.AddSeconds(-34))) { Application.DoEvents(); Thread.Sleep(40); }
+                    rck(!cf.IsBusy, "the main window finished its first search");
+                    cf.TestBusy(true, false); cf.Close();
+                    rck(!cf.IsDisposed, "the window does not close while a job that changes something runs");
+                    cf.TestBusy(true, true); cf.Close(); rpump();
+                    rck(cf.IsDisposed, "the window closes while only a search runs");
+                    MainForm cf2 = new MainForm(0); cf2.Show();
+                    DateTime cf2End = DateTime.UtcNow.AddSeconds(40);
+                    while (DateTime.UtcNow < cf2End && (cf2.IsBusy || DateTime.UtcNow < cf2End.AddSeconds(-34))) { Application.DoEvents(); Thread.Sleep(40); }
+                    cf2.Close(); rpump();
+                    rck(cf2.IsDisposed, "the window closes when nothing runs");
+                }
+                catch (Exception rex) { rfail++; rs.AppendLine("FAIL  EXCEPTION " + rex); }
+                try { Directory.Delete(rtmp, true); } catch (Exception) { }
+                rs.AppendLine(rfail == 0 ? "ALL PASSED" : "FAILED: " + rfail);
+                File.WriteAllText(args[1], rs.ToString());
+                return rfail == 0 ? 0 : 1;
             }
             if (args.Length >= 2 && args[0] == "--log-fold-test")
             {

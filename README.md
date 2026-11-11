@@ -87,7 +87,7 @@ powershell -ExecutionPolicy Bypass -File source\build.ps1
 
 The exe is made in `app\FiveMToolbox.exe`. Or double-click `source\build-and-run.bat`: it builds and starts the program. `-OutDir <folder>` builds somewhere else.
 
-There are command line switches for diagnostics and self-tests (for example `--nv-probe <file>`, `--vram-probe <file>`, `--tab-order-test <file>`, `--dpi-test <file>`). Most only read. See the source.
+There are command line switches for diagnostics and self-tests (for example `--nv-probe <file>`, `--vram-probe <file>`, `--tab-order-test <file>`, `--dpi-test <file>`). Most only read. A few change things on your PC, like the buttons do (for example `--apply`, `--nv-apply`, `--tidy-run`): they are for testing, not for daily use. See the source.
 
 ## Problems
 
