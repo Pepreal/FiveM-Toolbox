@@ -6149,7 +6149,7 @@ namespace FiveMFrameCap
         RadioButton rbCf, rbGoogle, rbBoth;
         // FiveM cache page
         DropBox cacheRoots;
-        Label cacheState, cacheTotal, sizeTemp, sizeLogs, sizeDeep, descTemp, descLogs, descDeep;
+        Label cacheState, cacheTotal, sizeTemp, sizeLogs, sizeDeep, descTemp, descLogs, descDeep, cacheIconNote;
         IconButton cacheRefresh, cacheClose, cacheClean, cacheStart, cacheWipe, cacheIcon;
         Card cReset; ToggleSwitch resetSwitch; Label resetOffLine, wipeBig, wipeDesc; int resetGen = 0;
         CheckBox cbTemp, cbLogs, cbDeep, cbPure;
@@ -7379,12 +7379,12 @@ namespace FiveMFrameCap
             cacheStart = Btn(Ico.Play, "Start FiveM", 256, 54, 200, 48); cacheStart.Font = new Font("Segoe UI", 10.5f, FontStyle.Bold); cacheStart.Enabled = false; cacheStart.Click += StartFiveMClick; cGo.Controls.Add(cacheStart);
             cbPure = new CheckBox(); cbPure.Text = Loc.T("Pure mode (-pure_1)"); cbPure.Left = 476; cbPure.Top = 54; cbPure.Width = 300; cbPure.Height = 26; cGo.Controls.Add(cbPure);
             cGo.Controls.Add(Small("ignores local file changes; for troubleshooting mods", 498, 80, 420, 22, "muted"));
-            // a second row: an icon on the desktop that starts FiveM in pure mode
-            int iw = FitW("Desktop icon: pure mode", 260);
+            // a second row on the same grid as the first: the button is as wide as "Clean cache" (same left and right edge), and its text starts under "Start FiveM"
+            int iw = FitW("Desktop icon: pure mode", 230);
             cacheIcon = Btn(Ico.Link, "Desktop icon: pure mode", 16, 112, iw, 36); cacheIcon.Enabled = false; cacheIcon.Click += PureIconClick;
             tip.SetToolTip(cacheIcon, Loc.T("Makes an icon on your desktop that starts FiveM with -pure_1 (FiveM then ignores local file changes; for troubleshooting mods)."));
             cGo.Controls.Add(cacheIcon);
-            cGo.Controls.Add(Small("Makes an icon on your desktop that starts FiveM in pure mode.", 16 + iw + 14, 118, 560, 22, "muted"));
+            cacheIconNote = Small("Makes an icon on your desktop that starts FiveM in pure mode.", Math.Max(256, 16 + iw + 10), 119, 560, 22, "muted"); cGo.Controls.Add(cacheIconNote);
 
             // the most extreme clean: a block of its own, and the button asks again in a big warning window
             cReset = NewCard("Reset (the most extreme clean)", Ico.Warning, 532, 88); pageCache.Controls.Add(cReset);
@@ -7815,6 +7815,8 @@ namespace FiveMFrameCap
         // The window cannot be closed while a job changes something: Radeon Software would stay closed, a file would stay half written. A search only reads, so it may be closed.
         public static bool TestQuiet = false;   // for --review-test: no message box
         public bool TestBusy(bool on, bool scan) { readOnlyJob = scan; busy = on; return busy; }
+        // for --review-test: the places of the second row of the clean block (button left, width, middle height, note left, middle height) and of the first row (Clean cache left, width, Start FiveM left)
+        public int[] TestCacheGoPlaces() { return new int[] { cacheIcon.Left, cacheIcon.Width, cacheIcon.Top + cacheIcon.Height / 2, cacheIconNote.Left, cacheIconNote.Top + cacheIconNote.Height / 2, cacheClean.Left, cacheClean.Width, cacheStart.Left }; }
         // for --review-test: where the two parts of the footer are (link left, right, credit left, right, width of the bar, middle height of the link, middle height of the credit)
         public int[] TestFooterPlaces(out string credit) { credit = copyLabel.Text; return new int[] { startLink.Left, startLink.Right, copyLabel.Left, copyLabel.Right, statusBar.ClientSize.Width, startLink.Top + startLink.Height / 2, copyLabel.Top + copyLabel.Height / 2 }; }
         protected override void OnFormClosing(FormClosingEventArgs e)
@@ -10596,6 +10598,9 @@ namespace FiveMFrameCap
                     DateTime cfEnd = DateTime.UtcNow.AddSeconds(40);
                     while (DateTime.UtcNow < cfEnd && (cf.IsBusy || DateTime.UtcNow < cfEnd.AddSeconds(-34))) { Application.DoEvents(); Thread.Sleep(40); }
                     rck(!cf.IsBusy, "the main window finished its first search");
+                    int[] gp = cf.TestCacheGoPlaces();
+                    rck(gp[0] == gp[5] && gp[1] == gp[6], "the desktop icon button has the left and the right edge of Clean cache (left " + gp[0] + ", width " + gp[1] + " against " + gp[5] + ", " + gp[6] + ")");
+                    rck(gp[3] == gp[7] && Math.Abs(gp[2] - gp[4]) <= 1, "its text starts under Start FiveM (" + gp[3] + " against " + gp[7] + ") and is on the height of the button (" + gp[4] + " against " + gp[2] + ")");
                     string fcredit; int[] fpl = cf.TestFooterPlaces(out fcredit);
                     rck(fcredit == "v" + Info.Version + "      Made by: " + Info.Owner + " " + Info.Year, "the footer credit reads like the one of the FiveM Server Manager: " + fcredit);
                     rck(fpl[0] <= 1 && fpl[1] < fpl[2] && fpl[4] - fpl[3] <= 2, "the link to the start window is on the left and the credit on the right (link " + fpl[0] + "-" + fpl[1] + ", credit " + fpl[2] + "-" + fpl[3] + " of " + fpl[4] + ")");
