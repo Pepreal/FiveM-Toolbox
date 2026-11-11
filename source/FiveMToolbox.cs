@@ -28,7 +28,7 @@ using Microsoft.Win32;
 
 namespace FiveMFrameCap
 {
-    // Everything the program says goes through here: the small box in the window, the big log window, and log.txt.
+    // Everything the program says goes through here: the small box in the window, the big log window, and the log file (FiveMToolbox.log).
     class LogEntry { public string Text; public string Time; public string Message; public string Tool; public bool Debug; public int Group; public int Sev = -1; }   // Sev = the severity of the message, worked out once
 
     // Small files that hold what the user could lose (the old cap values for Undo, the old DNS, the lists of builds): the new bytes are built first and written to a side
@@ -83,8 +83,8 @@ namespace FiveMFrameCap
                 {
                     if (path != null) return path;
                     string[] tries = new string[] {
-                        Path.Combine(AppDomain.CurrentDomain.BaseDirectory, Info.ExeName + "-log.txt"),
-                        Path.Combine(Info.DataDir, "log.txt") };
+                        Path.Combine(AppDomain.CurrentDomain.BaseDirectory, Info.ExeName + ".log"),
+                        Path.Combine(Info.DataDir, Info.ExeName + ".log") };
                     foreach (string t in tries)
                     {
                         try
@@ -5639,7 +5639,7 @@ namespace FiveMFrameCap
             IconButton copy = Small(Ico.Copy, 40); tip.SetToolTip(copy, Loc.T("Copy the log to the clipboard"));
             copy.Click += delegate { try { Clipboard.SetText(box.Text); AppLog.Add("Log copied to the clipboard."); } catch (Exception ex) { AppLog.Debug("copy failed: " + ex.Message); } };
             right.Controls.Add(copy);
-            IconButton open = Small(Ico.Document, 80); tip.SetToolTip(open, Loc.T("Open the log file with the program Windows uses for .txt files"));
+            IconButton open = Small(Ico.Document, 80); tip.SetToolTip(open, Loc.T("Open the log file with the program Windows uses for .log files"));
             open.Click += delegate
             {
                 try { ProcessStartInfo psi = new ProcessStartInfo(AppLog.FilePath); psi.UseShellExecute = true; Process.Start(psi); }
@@ -8215,7 +8215,7 @@ namespace FiveMFrameCap
             new string[] { "General", "Algemeen", "Allgemein", "Général", "General" },
             new string[] { "Debug lines", "Debugregels", "Debug-Zeilen", "Lignes de débogage", "Líneas de depuración" },
             new string[] { "Copy the log to the clipboard", "Kopieer het logboek naar het klembord", "Das Protokoll in die Zwischenablage kopieren", "Copier le journal dans le presse-papiers", "Copiar el registro al portapapeles" },
-            new string[] { "Open the log file with the program Windows uses for .txt files", "Open het logbestand met het programma dat Windows voor .txt-bestanden gebruikt", "Die Protokolldatei mit dem Programm öffnen, das Windows für .txt-Dateien verwendet", "Ouvrir le fichier journal avec le programme que Windows utilise pour les .txt", "Abrir el archivo de registro con el programa que Windows usa para .txt" },
+            new string[] { "Open the log file with the program Windows uses for .log files", "Open het logbestand met het programma dat Windows voor .log-bestanden gebruikt", "Die Protokolldatei mit dem Programm öffnen, das Windows für .log-Dateien verwendet", "Ouvrir le fichier journal avec le programme que Windows utilise pour les .log", "Abrir el archivo de registro con el programa que Windows usa para .log" },
             new string[] { "Show the log file in its folder", "Toon het logbestand in zijn map", "Die Protokolldatei in ihrem Ordner anzeigen", "Afficher le fichier journal dans son dossier", "Mostrar el archivo de registro en su carpeta" },
             new string[] { "Open the log in its own window", "Open het logboek in een eigen venster", "Das Protokoll in einem eigenen Fenster öffnen", "Ouvrir le journal dans sa propre fenêtre", "Abrir el registro en su propia ventana" },
             new string[] { "full log", "volledig logboek", "vollständiges Protokoll", "journal complet", "registro completo" },
@@ -10530,6 +10530,7 @@ namespace FiveMFrameCap
 
                     // the backups go in a folder "backup" next to the exe (the folder of the log file), the small state files stay in the data folder
                     string exeDirB = Path.GetDirectoryName(AppLog.FilePath);
+                    rck(Path.GetFileName(AppLog.FilePath) == "FiveMToolbox.log", "the log file is called FiveMToolbox.log (" + Path.GetFileName(AppLog.FilePath) + ")");
                     rck(Blb.BackupDir == Path.Combine(exeDirB, "backup"), "the backup folder is next to the log file (" + Blb.BackupDir + ")");
                     rck(string.Equals(exeDirB.TrimEnd('\\'), AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase), "that is the folder of the exe (it can be written here)");
                     string fakeDb = Path.Combine(rtmp, "drsdb"); Directory.CreateDirectory(fakeDb); File.WriteAllBytes(Path.Combine(fakeDb, "nvdrsdb0.bin"), new byte[] { 1, 2, 3 });
