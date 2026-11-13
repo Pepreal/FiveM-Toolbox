@@ -3346,19 +3346,26 @@ namespace FiveMFrameCap
             }
         }
 
-        protected override void OnPaint(PaintEventArgs e)
+        // The colours of the button now. A main button (tag "primary", the blue ones) is an OUTLINE: a dark blue fill (the colour behind it with some blue in it),
+        // a blue border and blue text, like the "Start challenge" button of the bot's page. The red danger button is a solid block. Also used by --review-test.
+        public void ButtonColors(out Color back, out Color fore, out Color border)
         {
-            Graphics g = e.Graphics;
-            g.SmoothingMode = SmoothingMode.AntiAlias;
             string tag = Tag as string;
             bool danger = tag == "danger";
-            bool main = tag == "primary" || tag == "tabon" || danger;
-            Color mainBase = danger ? Theme.Bad : Theme.Primary;
-            Color back, fore, border;
+            bool outlined = tag == "primary" || tag == "tabon";
+            Color behind = Parent != null ? Parent.BackColor : Theme.Bg1;
+            bool dark = Theme.IsDark;
             if (!Enabled) { back = Theme.Bg3; fore = Theme.Text2; border = Theme.Border; }
-            else if (main)
+            else if (outlined)
             {
-                back = down ? Shade(mainBase, -0.15f) : Fx.Mix(mainBase, Shade(mainBase, 0.12f), hv.Value);
+                float tint = down ? (dark ? 0.20f : 0.08f) : (dark ? 0.28f : 0.12f) + hv.Value * (dark ? 0.12f : 0.08f);
+                back = Fx.Mix(behind, Theme.Primary, tint);
+                fore = dark ? Theme.AccentText : Shade(Theme.AccentText, -0.25f);   // on the light theme a darker blue: the plain blue is too pale on the light fill
+                border = dark ? Fx.Mix(Fx.Mix(Theme.Primary, Theme.AccentText, 0.75f), Theme.AccentText, hv.Value) : Fx.Mix(Theme.Primary, Shade(Theme.Primary, -0.20f), hv.Value);
+            }
+            else if (danger)
+            {
+                back = down ? Shade(Theme.Bad, -0.15f) : Fx.Mix(Theme.Bad, Shade(Theme.Bad, 0.12f), hv.Value);
                 fore = Color.White; border = back;
             }
             else
@@ -3366,12 +3373,22 @@ namespace FiveMFrameCap
                 back = down ? Theme.Bg2 : Fx.Mix(Theme.Bg3, Theme.Bg4, hv.Value);
                 fore = Theme.Text; border = Fx.Mix(Theme.Border, Theme.Primary, hv.Value * 0.7f);
             }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            string tag = Tag as string;
+            bool outlined = Enabled && (tag == "primary" || tag == "tabon");
+            Color back, fore, border;
+            ButtonColors(out back, out fore, out border);
             g.Clear(Parent != null ? Parent.BackColor : Theme.Bg1);
             Rectangle r = new Rectangle(0, 0, Width - 1, Height - 1);
             using (GraphicsPath path = Rounded(r, Dpi.S(8)))
             {
                 using (Brush b = new SolidBrush(back)) g.FillPath(b, path);
-                using (Pen pen = new Pen(border)) g.DrawPath(pen, path);
+                using (Pen pen = new Pen(border, outlined ? Dpi.F(1.25f) : 1f)) g.DrawPath(pen, path);
             }
 
             // icon and text, centred together
@@ -10601,6 +10618,30 @@ namespace FiveMFrameCap
                     int[] gp = cf.TestCacheGoPlaces();
                     rck(gp[0] == gp[5] && gp[1] == gp[6], "the desktop icon button has the left and the right edge of Clean cache (left " + gp[0] + ", width " + gp[1] + " against " + gp[5] + ", " + gp[6] + ")");
                     rck(gp[3] == gp[7] && Math.Abs(gp[2] - gp[4]) <= 1, "its text starts under Start FiveM (" + gp[3] + " against " + gp[7] + ") and is on the height of the button (" + gp[4] + " against " + gp[2] + ")");
+                    // the blue buttons are an outline (dark blue fill, blue border, blue text) in both themes; the red one stays a solid block
+                    Func<Color, double> lum = delegate(Color c0)
+                    {
+                        Func<int, double> ch = delegate(int v) { double x0 = v / 255.0; return x0 <= 0.03928 ? x0 / 12.92 : Math.Pow((x0 + 0.055) / 1.055, 2.4); };
+                        return 0.2126 * ch(c0.R) + 0.7152 * ch(c0.G) + 0.0722 * ch(c0.B);
+                    };
+                    Func<Color, Color, double> contrast = delegate(Color c1, Color c2) { double l1 = lum(c1), l2 = lum(c2); return (Math.Max(l1, l2) + 0.05) / (Math.Min(l1, l2) + 0.05); };
+                    foreach (string themeName in new string[] { "dark", "light" })
+                    {
+                        Theme.Force(themeName);
+                        IconButton pb = new IconButton(); pb.Tag = "primary";
+                        Color pbBack, pbFore, pbBorder; pb.ButtonColors(out pbBack, out pbFore, out pbBorder);
+                        rck(pbBack != Theme.Primary && contrast(pbBack, Theme.Bg1) < 3.0, themeName + ": the blue button is not a solid blue block (fill " + pbBack.Name + ")");
+                        rck(pbBack != Theme.Bg1 && Math.Abs(lum(pbBack) - lum(Theme.Bg1)) > 0.01, themeName + ": its fill has some blue in it (it is not the colour behind it)");
+                        rck(contrast(pbFore, pbBack) >= 4.5, themeName + ": its text is easy to read (contrast " + contrast(pbFore, pbBack).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + ")");
+                        rck(contrast(pbBorder, pbBack) >= 2.0, themeName + ": its border shows (contrast " + contrast(pbBorder, pbBack).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + ")");
+                        IconButton db = new IconButton(); db.Tag = "danger";
+                        Color dbBack, dbFore, dbBorder; db.ButtonColors(out dbBack, out dbFore, out dbBorder);
+                        rck(dbBack == Theme.Bad && dbFore == Color.White, themeName + ": the red danger button is still a solid block with white text");
+                        IconButton off = new IconButton(); off.Tag = "primary"; off.Enabled = false;
+                        Color offBack, offFore, offBorder; off.ButtonColors(out offBack, out offFore, out offBorder);
+                        rck(offBack == Theme.Bg3 && offFore == Theme.Text2, themeName + ": a blue button that is switched off is grey");
+                    }
+                    Theme.Force("dark");
                     string fcredit; int[] fpl = cf.TestFooterPlaces(out fcredit);
                     rck(fcredit == "v" + Info.Version + "      Made by: " + Info.Owner + " " + Info.Year, "the footer credit reads like the one of the FiveM Server Manager: " + fcredit);
                     rck(fpl[0] <= 1 && fpl[1] < fpl[2] && fpl[4] - fpl[3] <= 2, "the link to the start window is on the left and the credit on the right (link " + fpl[0] + "-" + fpl[1] + ", credit " + fpl[2] + "-" + fpl[3] + " of " + fpl[4] + ")");
