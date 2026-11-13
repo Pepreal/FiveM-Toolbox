@@ -3168,6 +3168,17 @@ namespace FiveMFrameCap
             }
         }
 
+        // The blue "outline" look of the main buttons and of the switches that are on: a dark blue fill (the colour behind it with some blue in it), a blue border, blue text
+        // (or a blue knob). hover 0..1, down = pressed. On the light theme the text is a darker blue: the plain blue is too pale on the light fill.
+        public static void Outline(Color behind, float hover, bool down, out Color fill, out Color border, out Color text)
+        {
+            bool dark = IsDark;
+            float tint = down ? (dark ? 0.20f : 0.08f) : (dark ? 0.28f : 0.12f) + hover * (dark ? 0.12f : 0.08f);
+            fill = Fx.Mix(behind, Primary, tint);
+            text = dark ? AccentText : Fx.Mix(AccentText, Color.Black, 0.25f);
+            border = dark ? Fx.Mix(Fx.Mix(Primary, AccentText, 0.75f), AccentText, hover) : Fx.Mix(Primary, Fx.Mix(Primary, Color.Black, 0.20f), hover);
+        }
+
         public static void TitleBar(Form f)
         {
             try
@@ -3354,15 +3365,8 @@ namespace FiveMFrameCap
             bool danger = tag == "danger";
             bool outlined = tag == "primary" || tag == "tabon";
             Color behind = Parent != null ? Parent.BackColor : Theme.Bg1;
-            bool dark = Theme.IsDark;
             if (!Enabled) { back = Theme.Bg3; fore = Theme.Text2; border = Theme.Border; }
-            else if (outlined)
-            {
-                float tint = down ? (dark ? 0.20f : 0.08f) : (dark ? 0.28f : 0.12f) + hv.Value * (dark ? 0.12f : 0.08f);
-                back = Fx.Mix(behind, Theme.Primary, tint);
-                fore = dark ? Theme.AccentText : Shade(Theme.AccentText, -0.25f);   // on the light theme a darker blue: the plain blue is too pale on the light fill
-                border = dark ? Fx.Mix(Fx.Mix(Theme.Primary, Theme.AccentText, 0.75f), Theme.AccentText, hv.Value) : Fx.Mix(Theme.Primary, Shade(Theme.Primary, -0.20f), hv.Value);
-            }
+            else if (outlined) Theme.Outline(behind, hv.Value, down, out back, out border, out fore);
             else if (danger)
             {
                 back = down ? Shade(Theme.Bad, -0.15f) : Fx.Mix(Theme.Bad, Shade(Theme.Bad, 0.12f), hv.Value);
@@ -5237,22 +5241,33 @@ namespace FiveMFrameCap
         protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
         protected override void OnEnabledChanged(EventArgs e) { Invalidate(); base.OnEnabledChanged(e); }
 
+        // The colours now. A switch that is on has the colours of the blue outline buttons (dark blue track, blue border, blue knob); off it is grey. Also used by --review-test.
+        public void SwitchColors(out Color track, out Color rim, out Color knob)
+        {
+            Color behind = Parent != null ? Parent.BackColor : Theme.Bg1;
+            Color offTrack = Fx.Mix(Theme.Bg4, Theme.Border, 0.5f + 0.3f * hv.Value);
+            Color onFill, onBorder, onKnob; Theme.Outline(behind, hv.Value, false, out onFill, out onBorder, out onKnob);
+            track = Fx.Mix(offTrack, onFill, f.Value);
+            rim = Fx.Mix(offTrack, onBorder, f.Value);
+            knob = Fx.Mix(Theme.Text2, onKnob, f.Value);
+        }
+
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.Clear(Parent != null ? Parent.BackColor : Theme.Bg1);
-            Color off = Fx.Mix(Theme.Bg4, Theme.Border, 0.5f + 0.3f * hv.Value);
-            Color track = Fx.Mix(off, Theme.Primary, f.Value);
+            Color track, rim, knob; SwitchColors(out track, out rim, out knob);
             Rectangle r = new Rectangle(0, Dpi.S(1), Width - 1, Height - Dpi.S(3));
             using (GraphicsPath p = Gfx.Rounded(r, r.Height))
             {
                 using (Brush b = new SolidBrush(Enabled ? track : Fx.Mix(track, Theme.Bg1, 0.5f))) g.FillPath(b, p);
+                using (Pen pen = new Pen(Enabled ? rim : Fx.Mix(rim, Theme.Bg1, 0.5f), Dpi.F(1.25f))) g.DrawPath(pen, p);
                 if (Focused) using (Pen pen = new Pen(Theme.AccentText, Dpi.F(1.5f))) g.DrawPath(pen, p);
             }
             int kd = r.Height - Dpi.S(6);
             float kx = Dpi.F(3f) + (Width - 1 - kd - Dpi.S(6)) * f.Value;
-            using (Brush kb = new SolidBrush(Fx.Mix(Theme.Text2, Color.White, f.Value))) g.FillEllipse(kb, kx, r.Y + Dpi.S(3), kd, kd);
+            using (Brush kb = new SolidBrush(Enabled ? knob : Fx.Mix(knob, Theme.Bg1, 0.5f))) g.FillEllipse(kb, kx, r.Y + Dpi.S(3), kd, kd);
         }
     }
 
@@ -5941,11 +5956,115 @@ namespace FiveMFrameCap
         void OnTheme() { try { if (IsHandleCreated && !IsDisposed) BeginInvoke(new Action(delegate { Theme.Apply(this); })); } catch (Exception) { } }
     }
 
+    // ---------------------------------------------------------------- is there a newer version? (asked by the welcome window only)
+    // GitHub is asked for the list of releases of this program. What goes out: the name and the version of this program (as the "user agent") and, like with every
+    // web page, the IP address. The answer is only read for version numbers (digits and dots). The page that opens is always the fixed page of this program on GitHub,
+    // never an address that came out of the answer.
+    static class UpdateCheck
+    {
+        public const string RepoUrl = "https://github.com/Pepreal/FiveM-Toolbox";
+        public const string ReleasesUrl = RepoUrl + "/releases";
+        const string ApiUrl = "https://api.github.com/repos/Pepreal/FiveM-Toolbox/releases?per_page=15";
+        public static Func<string> Fetch = FetchReal;     // a test puts a pretend answer here
+        public static Action<string> OpenHook = null;     // a test collects the address instead of opening it
+
+        static string FetchReal()
+        {
+            // this program runs as an old .NET program, which asks with TLS 1.0 only; GitHub wants TLS 1.2
+            ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072 | (SecurityProtocolType)768 | (SecurityProtocolType)192;
+            HttpWebRequest req = (HttpWebRequest)WebRequest.Create(ApiUrl);
+            req.UserAgent = Info.ExeName + "/" + Info.Version;
+            req.Accept = "application/vnd.github+json";
+            req.Timeout = 6000; req.ReadWriteTimeout = 6000;
+            using (WebResponse r = req.GetResponse())
+            using (StreamReader sr = new StreamReader(r.GetResponseStream(), Encoding.UTF8)) return sr.ReadToEnd();
+        }
+
+        static readonly Regex TagRx = new Regex(@"""tag_name""\s*:\s*""v?([0-9]+(?:\.[0-9]+){1,3})""");
+
+        // the highest version number of the tags in the answer, null when there is none
+        public static string Newest(string json)
+        {
+            if (string.IsNullOrEmpty(json)) return null;
+            Version best = null; string bestText = null;
+            foreach (Match m in TagRx.Matches(json))
+            {
+                Version v;
+                if (!Version.TryParse(m.Groups[1].Value, out v)) continue;
+                if (best == null || v > best) { best = v; bestText = m.Groups[1].Value; }
+            }
+            return bestText;
+        }
+
+        public static bool IsNewer(string remote, string local)
+        {
+            Version r, l;
+            return Version.TryParse(remote, out r) && Version.TryParse(local, out l) && r > l;
+        }
+
+        // The newest version when it is newer than this program, else null. Also null when GitHub can not be reached: the window then just shows nothing.
+        public static string Check()
+        {
+            try
+            {
+                string newest = Newest(Fetch());
+                if (newest == null) { AppLog.Debug("update check: no version number in the answer of GitHub"); return null; }
+                AppLog.Debug("update check: the newest version on GitHub is " + newest + ", this program is " + Info.Version);
+                return IsNewer(newest, Info.Version) ? newest : null;
+            }
+            catch (Exception ex) { AppLog.Debug("update check: " + ex.Message); return null; }
+        }
+
+        public static void Open(string url)
+        {
+            if (OpenHook != null) { OpenHook(url); return; }
+            try { ProcessStartInfo psi = new ProcessStartInfo(url); psi.UseShellExecute = true; Process.Start(psi); }
+            catch (Exception ex) { AppLog.Debug("could not open " + url + ": " + ex.Message); }
+        }
+    }
+
     // ---------------------------------------------------------------- the welcome window (shown until "do not show again" is ticked)
     class DisclaimerForm : ChromeForm
     {
         CheckBox dont;
+        LinkLabel copyLink, updateLink;
+        volatile string pendingUpdate = null;
+        bool updateShown = false;
         public bool DontShowAgain { get { return dont.Checked; } }
+
+        // Asks GitHub in the background. A line under the copyright appears when there is a newer version; nothing is shown when the program is up to date or GitHub can not be reached.
+        public void StartUpdateCheck()
+        {
+            Thread t = new Thread(delegate()
+            {
+                string newer = UpdateCheck.Check();
+                if (newer == null) return;
+                pendingUpdate = newer;
+                try { if (IsHandleCreated && !IsDisposed) BeginInvoke(new Action(delegate { ShowUpdate(newer); })); } catch (Exception) { }
+            });
+            t.IsBackground = true; t.Start();
+        }
+
+        public void ShowUpdate(string version)
+        {
+            if (updateShown || IsDisposed) return;
+            updateShown = true;
+            updateLink.Text = string.Format(Loc.T("New version available: {0}. Click here to download it."), version);
+            updateLink.LinkColor = Theme.Warn; updateLink.ActiveLinkColor = Theme.Warn; updateLink.VisitedLinkColor = Theme.Warn;
+            updateLink.Top = copyLink.Bottom + Dpi.S(6);
+            updateLink.Visible = true;
+            ClientSize = new Size(ClientSize.Width, ClientSize.Height + updateLink.GetPreferredSize(Size.Empty).Height + Dpi.S(12));
+        }
+
+        // for --review-test
+        public string TestUpdateText() { return updateLink.Visible ? updateLink.Text : null; }
+        public string TestCopyText() { return copyLink.Text; }
+        public void TestClickCopy() { ClickLink(copyLink); }
+        public void TestClickUpdate() { ClickLink(updateLink); }
+        static void ClickLink(LinkLabel l)
+        {
+            typeof(LinkLabel).GetMethod("OnLinkClicked", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(l, new object[] { new LinkLabelLinkClickedEventArgs(l.Links[0]) });
+        }
 
         public DisclaimerForm() : base(false, false, 40, true)
         {
@@ -5987,7 +6106,15 @@ namespace FiveMFrameCap
             IconButton quit = new IconButton(); quit.Glyph = Ico.Cancel; quit.Text = Loc.T("Quit"); quit.Left = 298; quit.Top = y; quit.Width = 120; quit.Height = 42; quit.DialogResult = DialogResult.Cancel; Body.Controls.Add(quit);
             y += 42 + 14;
 
-            Label copy = new Label(); copy.Text = Ico.Copyright + " " + Info.Year + " " + Info.Owner; copy.Tag = "muted"; copy.AutoSize = true; copy.Left = 26; copy.Top = y; Body.Controls.Add(copy);
+            // the copyright line is a link to the page of this program on GitHub
+            copyLink = new LinkLabel(); copyLink.Text = Ico.Copyright + " " + Info.Year + " " + Info.Owner; copyLink.AutoSize = true; copyLink.Left = 26; copyLink.Top = y; copyLink.LinkBehavior = LinkBehavior.HoverUnderline;
+            copyLink.LinkClicked += delegate { UpdateCheck.Open(UpdateCheck.RepoUrl); };
+            Body.Controls.Add(copyLink);
+            // the notice about a newer version: hidden until the check has found one (then the window grows by this line)
+            updateLink = new LinkLabel(); updateLink.AutoSize = true; updateLink.Left = 26; updateLink.Top = y + 24; updateLink.Visible = false;
+            updateLink.LinkClicked += delegate { UpdateCheck.Open(UpdateCheck.ReleasesUrl); };
+            Body.Controls.Add(updateLink);
+            Shown += delegate { if (pendingUpdate != null) ShowUpdate(pendingUpdate); };   // the answer came before the window was there
             y += 30;
 
             AcceptButton = ok; CancelButton = quit;
@@ -8368,6 +8495,7 @@ namespace FiveMFrameCap
             new string[] { "Undo skipped: the old value was saved for another graphics driver. Nothing was changed.", "Ongedaan maken overgeslagen: de oude waarde is voor een ander grafisch stuurprogramma bewaard. Er is niets veranderd.", "Rückgängig übersprungen: Der alte Wert wurde für einen anderen Grafiktreiber gespeichert. Es wurde nichts geändert.", "Annulation ignorée : l'ancienne valeur a été enregistrée pour un autre pilote graphique. Rien n'a été modifié.", "Deshacer omitido: el valor anterior se guardó para otro controlador gráfico. No se cambió nada." },
             new string[] { "A job is still running. Wait until it has finished, then close the window.", "Er loopt nog een taak. Wacht tot die klaar is en sluit dan het venster.", "Es läuft noch eine Aufgabe. Warte, bis sie fertig ist, und schließe dann das Fenster.", "Une tâche est encore en cours. Attends qu'elle soit terminée, puis ferme la fenêtre.", "Todavía hay una tarea en curso. Espera a que termine y luego cierra la ventana." },
             new string[] { "Made by:", "Gemaakt door:", "Erstellt von:", "Créé par :", "Hecho por:" },
+            new string[] { "New version available: {0}. Click here to download it.", "Nieuwe versie beschikbaar: {0}. Klik hier om hem te downloaden.", "Neue Version verfügbar: {0}. Hier klicken zum Herunterladen.", "Nouvelle version disponible : {0}. Cliquez ici pour la télécharger.", "Nueva versión disponible: {0}. Haz clic aquí para descargarla." },
             new string[] { "Put back {0} build(s): they are not in Radeon Software any more. Radeon Software was restarted.", "{0} build(s) teruggezet: ze staan niet meer in Radeon Software. Radeon Software is opnieuw gestart.", "{0} Build(s) zurückgesetzt: sie sind nicht mehr in Radeon Software. Radeon Software wurde neu gestartet.", "{0} build(s) rétablie(s) : elles ne sont plus dans Radeon Software. Radeon Software a été redémarré.", "{0} build(s) restaurada(s): ya no están en Radeon Software. Se reinició Radeon Software." },
             new string[] { "Network card", "Netwerkkaart", "Netzwerkkarte", "Carte réseau", "Tarjeta de red" },
             new string[] { "Speed", "Snelheid", "Geschwindigkeit", "Vitesse", "Velocidad" },
@@ -10519,6 +10647,24 @@ namespace FiveMFrameCap
                 File.WriteAllText(args[1], cs.ToString());
                 return cfail == 0 ? 0 : 1;
             }
+            if (args.Length >= 2 && args[0] == "--update-check-test")
+            {
+                // --update-check-test <outfile>: asks GitHub for real (read only): which version is the newest, and is it newer than this program?
+                StringBuilder uc = new StringBuilder();
+                try
+                {
+                    string answer = UpdateCheck.Fetch();
+                    uc.AppendLine("answer of GitHub: " + (answer == null ? 0 : answer.Length) + " characters");
+                    string newest = UpdateCheck.Newest(answer);
+                    uc.AppendLine("newest version on GitHub: " + (newest ?? "(none found)"));
+                    uc.AppendLine("this program: " + Info.Version);
+                    uc.AppendLine("newer on GitHub: " + (newest != null && UpdateCheck.IsNewer(newest, Info.Version)));
+                    uc.AppendLine(newest != null ? "ALL OK" : "FAILED: no version found");
+                }
+                catch (Exception uex) { uc.AppendLine("FAILED: " + uex.Message); }
+                File.WriteAllText(args[1], uc.ToString());
+                return 0;
+            }
             if (args.Length >= 2 && args[0] == "--review-test")
             {
                 // --review-test <outfile>: the fixes of the review for bugs, security, speed and dead code (scratch files and hidden windows only; nothing on this PC is changed)
@@ -10554,6 +10700,48 @@ namespace FiveMFrameCap
                     int inFile = 0;
                     foreach (string ln in File.ReadAllLines(AppLog.FilePath)) if (ln.Contains(rmark)) inFile++;
                     rck(inFile == 480, "the log file keeps every line when 8 threads write at once (" + inFile + " of 480)");
+
+                    // is there a newer version? (GitHub is not asked here: a pretend answer is used)
+                    Func<string> realFetch = UpdateCheck.Fetch;
+                    string tags = "[{\"tag_name\":\"v0.9.0\",\"prerelease\":true},{\"tag_name\":\"v0.8.1\"},{\"tag_name\":\"v0.10.0\"},{\"tag_name\":\"v0.7.0\"}]";
+                    rck(UpdateCheck.Newest(tags) == "0.10.0", "the newest tag is the highest number, not the first or the longest text (" + UpdateCheck.Newest(tags) + ")");
+                    rck(UpdateCheck.Newest("nothing here") == null && UpdateCheck.Newest(null) == null && UpdateCheck.Newest("[{\"tag_name\":\"nightly\"}]") == null, "an answer without a version number gives no version");
+                    rck(UpdateCheck.IsNewer("0.8.2", "0.8.1") && UpdateCheck.IsNewer("0.10.0", "0.9.9") && UpdateCheck.IsNewer("1.0", "0.9.9"), "a higher version is newer (numbers, not text: 0.10.0 is newer than 0.9.9)");
+                    rck(!UpdateCheck.IsNewer("0.8.1", "0.8.1") && !UpdateCheck.IsNewer("0.8.0", "0.8.1") && !UpdateCheck.IsNewer("abc", "0.8.1"), "the same version, an older one and a bad one are not newer");
+                    UpdateCheck.Fetch = delegate { return "[{\"tag_name\":\"v99.0.0\"},{\"tag_name\":\"v" + Info.Version + "\"}]"; };
+                    rck(UpdateCheck.Check() == "99.0.0", "the check gives the newer version");
+                    UpdateCheck.Fetch = delegate { return "[{\"tag_name\":\"v" + Info.Version + "\"}]"; };
+                    rck(UpdateCheck.Check() == null, "the check gives nothing when the program is the newest");
+                    UpdateCheck.Fetch = delegate { throw new WebException("no network"); };
+                    rck(UpdateCheck.Check() == null, "the check gives nothing (and no crash) when GitHub can not be reached");
+                    List<string> opened = new List<string>();
+                    UpdateCheck.OpenHook = delegate(string u0) { opened.Add(u0); };
+                    UpdateCheck.Fetch = delegate { return "[{\"tag_name\":\"v99.0.0\"}]"; };
+                    using (DisclaimerForm dfm = new DisclaimerForm())
+                    {
+                        dfm.Show(); rpump();
+                        rck(dfm.TestUpdateText() == null, "the welcome window shows no notice before the check");
+                        rck(dfm.TestCopyText().EndsWith("2026 Pepreal"), "the copyright line is there (" + dfm.TestCopyText() + ")");
+                        dfm.TestClickCopy();
+                        rck(opened.Count == 1 && opened[0] == "https://github.com/Pepreal/FiveM-Toolbox", "a click on the copyright line opens the GitHub page of the program (" + string.Join(",", opened.ToArray()) + ")");
+                        int h0 = dfm.Height;
+                        dfm.StartUpdateCheck();
+                        DateTime ucEnd = DateTime.UtcNow.AddSeconds(8);
+                        while (dfm.TestUpdateText() == null && DateTime.UtcNow < ucEnd) { Application.DoEvents(); Thread.Sleep(40); }
+                        rck(dfm.TestUpdateText() != null && dfm.TestUpdateText().Contains("99.0.0"), "the welcome window shows the notice with the new version (" + dfm.TestUpdateText() + ")");
+                        rck(dfm.Height > h0, "the window grew to make room for the notice (" + h0 + " -> " + dfm.Height + ")");
+                        opened.Clear(); dfm.TestClickUpdate();
+                        rck(opened.Count == 1 && opened[0] == "https://github.com/Pepreal/FiveM-Toolbox/releases", "a click on the notice opens the releases page (" + string.Join(",", opened.ToArray()) + ")");
+                    }
+                    UpdateCheck.Fetch = delegate { return "[{\"tag_name\":\"v" + Info.Version + "\"}]"; };
+                    using (DisclaimerForm dfm2 = new DisclaimerForm())
+                    {
+                        dfm2.Show(); rpump(); int h1 = dfm2.Height;
+                        dfm2.StartUpdateCheck();
+                        Thread.Sleep(500); rpump();
+                        rck(dfm2.TestUpdateText() == null && dfm2.Height == h1, "no notice, and the same window size, when the program is the newest");
+                    }
+                    UpdateCheck.OpenHook = null; UpdateCheck.Fetch = realFetch;
 
                     // the backups go in a folder "backup" next to the exe (the folder of the log file), the small state files stay in the data folder
                     string exeDirB = Path.GetDirectoryName(AppLog.FilePath);
@@ -10637,6 +10825,12 @@ namespace FiveMFrameCap
                         IconButton db = new IconButton(); db.Tag = "danger";
                         Color dbBack, dbFore, dbBorder; db.ButtonColors(out dbBack, out dbFore, out dbBorder);
                         rck(dbBack == Theme.Bad && dbFore == Color.White, themeName + ": the red danger button is still a solid block with white text");
+                        ToggleSwitch tsOn = new ToggleSwitch(); tsOn.Checked = true;
+                        Color tsTrack, tsRim, tsKnob; tsOn.SwitchColors(out tsTrack, out tsRim, out tsKnob);
+                        rck(tsTrack == pbBack && tsRim == pbBorder && tsKnob == pbFore, themeName + ": a switch that is on has the same colours as the blue button (track " + tsTrack.Name + " / " + pbBack.Name + ", knob " + tsKnob.Name + " / " + pbFore.Name + ")");
+                        ToggleSwitch tsOff = new ToggleSwitch();
+                        Color tfTrack, tfRim, tfKnob; tsOff.SwitchColors(out tfTrack, out tfRim, out tfKnob);
+                        rck(tfTrack != tsTrack && tfKnob == Theme.Text2 && tfRim == tfTrack, themeName + ": a switch that is off is grey with a grey knob and no blue rim");
                         IconButton off = new IconButton(); off.Tag = "primary"; off.Enabled = false;
                         Color offBack, offFore, offBorder; off.ButtonColors(out offBack, out offFore, out offBorder);
                         rck(offBack == Theme.Bg3 && offFore == Theme.Text2, themeName + ": a blue button that is switched off is grey");
@@ -10908,6 +11102,19 @@ namespace FiveMFrameCap
                     }
                     smalls[k].Close();
                 }
+                // the welcome window with the notice about a newer version (a pretend version number: GitHub is not asked)
+                using (DisclaimerForm wu = new DisclaimerForm())
+                {
+                    wu.Show();
+                    for (int i = 0; i < 10; i++) { Application.DoEvents(); Thread.Sleep(50); }
+                    wu.ShowUpdate("0.8.2");
+                    for (int i = 0; i < 10; i++) { Application.DoEvents(); Thread.Sleep(50); }
+                    using (Bitmap bmp4 = new Bitmap(wu.Width, wu.Height))
+                    {
+                        Snap(wu, bmp4);
+                        bmp4.Save(args[1].Replace(".png", "-welcome-update.png"), System.Drawing.Imaging.ImageFormat.Png);
+                    }
+                }
                 f.Close();
                 return 0;
             }
@@ -10926,6 +11133,7 @@ namespace FiveMFrameCap
             {
                 using (DisclaimerForm d = new DisclaimerForm())
                 {
+                    d.StartUpdateCheck();
                     if (d.ShowDialog() != DialogResult.OK) return 0;
                     if (d.DontShowAgain) Settings.Set("disclaimer", "accepted");
                 }
