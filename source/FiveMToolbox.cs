@@ -22,8 +22,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Pepreal")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 Pepreal. MIT License.")]
 [assembly: AssemblyProduct("FiveM Toolbox")]
-[assembly: AssemblyVersion("0.8.1.0")]
-[assembly: AssemblyFileVersion("0.8.1.0")]
+[assembly: AssemblyVersion("0.8.2.0")]
+[assembly: AssemblyFileVersion("0.8.2.0")]
 [assembly: DefaultDllImportSearchPaths(DllImportSearchPath.System32)]   // every DllImport (AMD, NVIDIA, Windows) loads from the Windows folder only, never from the folder of the exe
 
 namespace FiveMFrameCap
@@ -453,7 +453,7 @@ namespace FiveMFrameCap
             return drawnIcon;
         }
 
-        public const string Version = "0.8.1";
+        public const string Version = "0.8.2";
         public const string AppName = "FiveM Toolbox";
         public const string ExeName = "FiveMToolbox";
         public const string Folder = "FiveMToolbox";
@@ -6582,7 +6582,7 @@ namespace FiveMFrameCap
             logPanel.ReportCopied += delegate { activity.Finish("ok", Loc.T("Report copied"), Loc.T("The whole log is on your clipboard. Paste it in a message. It has file paths and your PC's name in it.")); };
             footer.Controls.Add(logPanel);
             statusBar = new Panel(); statusBar.Dock = DockStyle.Bottom; statusBar.Height = 30; statusBar.Tag = "body";
-            // the credit on the right ("v0.8.1      Made by: Pepreal 2026", like the FiveM Server Manager), the link to the start window on the left
+            // the credit on the right ("v0.8.2      Made by: Pepreal 2026", like the FiveM Server Manager), the link to the start window on the left
             copyLabel = new Label(); copyLabel.Text = "v" + Info.Version + "      " + Loc.T("Made by:") + " " + Info.Owner + " " + Info.Year; copyLabel.Tag = "muted"; copyLabel.AutoSize = false; copyLabel.Dock = DockStyle.Right; copyLabel.TextAlign = ContentAlignment.MiddleRight;
             statusBar.Controls.Add(copyLabel);
             // docked on the right like the link is docked on the left: the same height, and the text in the middle of the bar in the same way. As wide as its text.

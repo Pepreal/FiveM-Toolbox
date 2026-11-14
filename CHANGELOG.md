@@ -5,7 +5,7 @@ Tags: NEW, CHANGED, FIXED.
 
 ---
 
-## Unreleased
+## v0.8.2 - 2026-11-14 (latest)
 
 **CHANGED** - **The blue buttons are an outline.** *The big blue buttons (Apply cap, Clean cache, Use this DNS, Save the settings, and the "I understand" buttons) were a solid blue block with white text. Now they have a dark blue fill, a blue border and blue text. It is the same in the dark and the light theme, the text is easy to read on both (checked by a self test), and a blue button that is switched off is grey. The red button of the Reset stays a solid block. The README pictures show the new look.*
 
@@ -19,7 +19,7 @@ Tags: NEW, CHANGED, FIXED.
 
 **CHANGED** - **The switches have the same colours as the blue buttons.** *A switch that is on has a dark blue track, a blue border and a blue knob (before: a solid blue track with a white knob). A switch that is off is grey, as before. It is the same in the dark and the light theme. The README pictures show it.*
 
-## v0.8.1 - 2026-11-11 (latest)
+## v0.8.1 - 2026-11-11
 
 **NEW** - **A build that Radeon Software does not know yet is added by the program (AMD).** *Before, the program said "Not in Radeon Software yet" and you had to add the build by hand in Radeon Software (Gaming > Games). Now Apply does it: it makes a profile for the build through AMD's own library (the library Radeon Software uses itself), copied from the profile of another FiveM build, with Radeon Chill on and your cap in both values. Radeon Software closes for a moment and opens again, like for every change, and the program checks that AMD shows the new value. The build also shows in the Radeon Software list of games (Gaming > Games): a build that you removed there shows again, and a build that is not in the list gets a new entry. Undo takes the build out of Radeon Software again and hides it in the list, like the Remove button does. There must be one FiveM build in Radeon Software with Radeon Chill values to copy from; if there is none, the program still says to add one by hand. Tested on an AMD Radeon RX 9070 XT.*
 
