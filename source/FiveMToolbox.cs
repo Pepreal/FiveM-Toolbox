@@ -312,6 +312,12 @@ namespace FiveMFrameCap
                 int need = TextRenderer.MeasureText(l.Text.TrimEnd('\r', '\n', ' '), l.Font, new Size(l.Width, 0), TextFormatFlags.WordBreak | TextFormatFlags.NoPadding).Height;
                 if (need > l.Height + 3) return NameOf(l) + " needs " + need + " px of height but is " + l.Height + " px high";
             }
+            ThemedCheckBox cx = c as ThemedCheckBox;
+            if (cx != null && !string.IsNullOrEmpty(cx.Text))
+            {
+                int need = TextRenderer.MeasureText(cx.Text, cx.Font, new Size(Math.Max(1, cx.Width - Dpi.S(26)), 0), TextFormatFlags.WordBreak | TextFormatFlags.NoPadding).Height;
+                if (need > cx.Height + 3) return NameOf(cx) + " needs " + need + " px of height but is " + cx.Height + " px high";
+            }
             IconButton b = c as IconButton;
             if (b != null && !string.IsNullOrEmpty(b.Text))
             {
@@ -4863,6 +4869,18 @@ namespace FiveMFrameCap
         }
         protected override void OnMouseEnter(EventArgs e) { hv.To(1f); base.OnMouseEnter(e); }
         protected override void OnMouseLeave(EventArgs e) { hv.To(0f); base.OnMouseLeave(e); }
+        // The colours now (also used by --review-test): selected = the blue outline of the blue buttons.
+        public void GlyphColors(out Color fill, out Color border, out Color glyph)
+        {
+            Color bg = Parent != null ? Parent.BackColor : Theme.Frame;
+            float s = sel.Value, h = hv.Value;
+            Color onFill, onBorder, onText; Theme.Outline(bg, h, false, out onFill, out onBorder, out onText);
+            Color baseFill = Fx.Mix(bg, Theme.Bg4, h);
+            fill = Fx.Mix(baseFill, onFill, s);
+            border = Fx.Mix(baseFill, onBorder, s);
+            glyph = Fx.Mix(Theme.Text2, onText, s);
+        }
+
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = e.Graphics;
@@ -4870,10 +4888,15 @@ namespace FiveMFrameCap
             Color bg = Parent != null ? Parent.BackColor : Theme.Frame;
             g.Clear(bg);
             float s = sel.Value, h = hv.Value;
+            Color fill, border, glyph; GlyphColors(out fill, out border, out glyph);
             Rectangle r = new Rectangle(1, 1, Width - 3, Height - 3);
             if (s > 0.01f || h > 0.01f)
-                using (GraphicsPath p = Gfx.Rounded(r, Dpi.S(10))) using (Brush b = new SolidBrush(Fx.Mix(Fx.Mix(bg, Theme.Bg4, h), Theme.Primary, s))) g.FillPath(b, p);
-            Gfx.Glyph(g, Glyph, new Rectangle(0, 0, Width, Height), Fx.Mix(Theme.Text2, Color.White, s), 11f);
+                using (GraphicsPath p = Gfx.Rounded(r, Dpi.S(10)))
+                {
+                    using (Brush b = new SolidBrush(fill)) g.FillPath(b, p);
+                    if (s > 0.01f) using (Pen pen = new Pen(border, 1f + 0.25f * s)) g.DrawPath(pen, p);
+                }
+            Gfx.Glyph(g, Glyph, new Rectangle(0, 0, Width, Height), glyph, 11f);
         }
     }
 
@@ -4949,20 +4972,30 @@ namespace FiveMFrameCap
         }
         protected override void OnMouseEnter(EventArgs e) { hv.To(1f); base.OnMouseEnter(e); }
         protected override void OnMouseLeave(EventArgs e) { hv.To(0f); base.OnMouseLeave(e); }
+        // The colours now (also used by --review-test): not selected = grey, selected = the blue outline of the blue buttons (the change between the two fades).
+        public void PillColors(out Color fill, out Color border, out Color text)
+        {
+            float s = sel.Value, h = hv.Value;
+            Color behind = Parent != null ? Parent.BackColor : Theme.Bg1;
+            Color onFill, onBorder, onText; Theme.Outline(behind, h, false, out onFill, out onBorder, out onText);
+            fill = Fx.Mix(Fx.Mix(Theme.Bg3, Theme.Bg4, h), onFill, s);
+            border = Fx.Mix(Theme.Border, onBorder, s);
+            text = Fx.Mix(Theme.Text2, onText, s);
+        }
+
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.Clear(Parent != null ? Parent.BackColor : Theme.Bg1);
-            float s = sel.Value, h = hv.Value;
-            Color fill = Fx.Mix(Fx.Mix(Theme.Bg3, Theme.Bg4, h), Theme.Primary, s);
+            Color fill, border, text; PillColors(out fill, out border, out text);
             Rectangle r = new Rectangle(0, 0, Width - 1, Height - 1);
             using (GraphicsPath p = Gfx.Rounded(r, Height - 1))
             {
                 using (Brush b = new SolidBrush(fill)) g.FillPath(b, p);
-                if (s < 0.99f) using (Pen pen = new Pen(Fx.Mix(Theme.Border, fill, s))) g.DrawPath(pen, p);
+                using (Pen pen = new Pen(border, 1f + 0.25f * sel.Value)) g.DrawPath(pen, p);
             }
-            TextRenderer.DrawText(g, Text, Font, new Rectangle(0, 0, Width - 1, Height - 1), Fx.Mix(Theme.Text2, Color.White, s), TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            TextRenderer.DrawText(g, Text, Font, new Rectangle(0, 0, Width - 1, Height - 1), text, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
         }
     }
 
@@ -5268,6 +5301,81 @@ namespace FiveMFrameCap
             int kd = r.Height - Dpi.S(6);
             float kx = Dpi.F(3f) + (Width - 1 - kd - Dpi.S(6)) * f.Value;
             using (Brush kb = new SolidBrush(Enabled ? knob : Fx.Mix(knob, Theme.Bg1, 0.5f))) g.FillEllipse(kb, kx, r.Y + Dpi.S(3), kd, kd);
+        }
+    }
+
+    // ---------------------------------------------------------------- tick boxes in the colours of the blue outline buttons
+    static class CheckDraw
+    {
+        // A box that is ticked has the blue outline colours (dark blue fill, blue border, blue tick); a box that is not ticked is grey, like a normal button.
+        public static void Colors(Color behind, bool on, float hover, bool enabled, out Color fill, out Color border, out Color mark)
+        {
+            if (on) Theme.Outline(behind, hover, false, out fill, out border, out mark);
+            else { fill = Fx.Mix(Theme.Bg3, Theme.Bg4, hover); border = Fx.Mix(Theme.Border, Theme.Primary, hover * 0.7f); mark = fill; }
+            if (!enabled) { fill = Fx.Mix(fill, behind, 0.5f); border = Fx.Mix(border, behind, 0.5f); mark = Fx.Mix(mark, behind, 0.5f); }
+        }
+
+        public static void Box(Graphics g, Rectangle box, Color behind, bool on, float hover, bool enabled, bool focused)
+        {
+            Color fill, border, mark; Colors(behind, on, hover, enabled, out fill, out border, out mark);
+            SmoothingMode old = g.SmoothingMode; g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (GraphicsPath p = Gfx.Rounded(box, Dpi.S(8)))
+            {
+                using (Brush b = new SolidBrush(fill)) g.FillPath(b, p);
+                using (Pen pen = new Pen(border, on ? Dpi.F(1.25f) : 1f)) g.DrawPath(pen, p);
+            }
+            if (focused) using (GraphicsPath fp = Gfx.Rounded(Rectangle.Inflate(box, Dpi.S(2), Dpi.S(2)), Dpi.S(10))) using (Pen pen2 = new Pen(Theme.AccentText, Dpi.F(1.5f))) g.DrawPath(pen2, fp);
+            if (on)
+            {
+                float w = box.Width, h = box.Height;
+                PointF[] pts = new PointF[] { new PointF(box.X + w * 0.24f, box.Y + h * 0.52f), new PointF(box.X + w * 0.43f, box.Y + h * 0.71f), new PointF(box.X + w * 0.77f, box.Y + h * 0.31f) };
+                using (Pen mp = new Pen(mark, Math.Max(1.6f, Dpi.F(1.8f)))) { mp.StartCap = LineCap.Round; mp.EndCap = LineCap.Round; mp.LineJoin = LineJoin.Round; g.DrawLines(mp, pts); }
+            }
+            g.SmoothingMode = old;
+        }
+    }
+
+    // A tick box that draws itself: the colours of the blue outline buttons, the text next to it (one line, or several lines with the box at the top).
+    class ThemedCheckBox : CheckBox
+    {
+        readonly Fader hv;
+
+        public ThemedCheckBox()
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+            FlatStyle = FlatStyle.Flat;
+            hv = new Fader(this);
+        }
+
+        protected override void OnMouseEnter(EventArgs e) { hv.To(1f); base.OnMouseEnter(e); }
+        protected override void OnMouseLeave(EventArgs e) { hv.To(0f); base.OnMouseLeave(e); }
+        protected override void OnCheckedChanged(EventArgs e) { Invalidate(); base.OnCheckedChanged(e); }
+        protected override void OnEnabledChanged(EventArgs e) { Invalidate(); base.OnEnabledChanged(e); }
+        protected override void OnTextChanged(EventArgs e) { Invalidate(); base.OnTextChanged(e); }
+        protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
+        protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
+
+        // the colours now (also used by --review-test)
+        public void CheckColors(out Color fill, out Color border, out Color mark)
+        {
+            CheckDraw.Colors(Parent != null ? Parent.BackColor : Theme.Bg1, Checked, hv.Value, Enabled, out fill, out border, out mark);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            Color behind = Parent != null ? Parent.BackColor : Theme.Bg1;
+            g.Clear(behind);
+            int bs = Dpi.S(18), gap = Dpi.S(8), tx = bs + gap;
+            Rectangle tr = new Rectangle(tx, 0, Math.Max(1, Width - tx), Height);
+            int lineH = TextRenderer.MeasureText(g, "Ag", Font, new Size(int.MaxValue, int.MaxValue), TextFormatFlags.NoPadding).Height;
+            int textH = string.IsNullOrEmpty(Text) ? 0 : TextRenderer.MeasureText(g, Text, Font, new Size(tr.Width, 0), TextFormatFlags.WordBreak | TextFormatFlags.NoPadding).Height;
+            bool multi = textH > lineH + Dpi.S(3);
+            int by = multi ? Math.Max(0, (lineH - bs) / 2) : (Height - bs) / 2;
+            CheckDraw.Box(g, new Rectangle(0, by, bs - 1, bs - 1), behind, Checked, hv.Value, Enabled, Focused && ShowFocusCues);
+            if (textH > 0)
+                TextRenderer.DrawText(g, Text, Font, tr, Enabled ? ForeColor : Theme.Text2,
+                    (multi ? TextFormatFlags.Top | TextFormatFlags.WordBreak : TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis) | TextFormatFlags.Left | TextFormatFlags.NoPadding);
         }
     }
 
@@ -6119,7 +6227,7 @@ namespace FiveMFrameCap
             y = UiUtil.Wrapped(Body, "By continuing you accept these risks. Where it is possible, the old setting is saved or backed up first.", 26, y, bodyW - 52, normal, null, out p2);
             y += 16;
 
-            dont = new CheckBox(); dont.Text = Loc.T("Do not show this window again"); dont.Left = 26; dont.Top = y; dont.Width = bodyW - 52; dont.Height = 26; Body.Controls.Add(dont); y += 40;
+            dont = new ThemedCheckBox(); dont.Text = Loc.T("Do not show this window again"); dont.Left = 26; dont.Top = y; dont.Width = bodyW - 52; dont.Height = 26; Body.Controls.Add(dont); y += 40;
 
             IconButton ok = new IconButton(); ok.Glyph = Ico.Accept; ok.Text = Loc.T("I understand, continue"); ok.Tag = "primary"; ok.Left = 26; ok.Top = y; ok.Width = 262; ok.Height = 42;
             ok.Font = new Font("Segoe UI", 10f, FontStyle.Bold); ok.DialogResult = DialogResult.OK; Body.Controls.Add(ok);
@@ -6182,7 +6290,7 @@ namespace FiveMFrameCap
             Label adminSub;
             y = UiUtil.Wrapped(Body, "Windows asks once. Then the DNS tools never ask for permission again.", 86, y + 26, bodyW - 52 - 60, new Font("Segoe UI", 9f), "muted", out adminSub);
             y += 14;
-            skip = new CheckBox(); skip.Text = Loc.T("Skip this window next time and open the tool I pick"); skip.Left = 26; skip.Top = y; skip.Width = bodyW - 52; skip.Height = 26; Body.Controls.Add(skip); y += 32;
+            skip = new ThemedCheckBox(); skip.Text = Loc.T("Skip this window next time and open the tool I pick"); skip.Left = 26; skip.Top = y; skip.Width = bodyW - 52; skip.Height = 26; Body.Controls.Add(skip); y += 32;
             Label note;
             y = UiUtil.Wrapped(Body, "You can bring this window back with the link at the bottom of the main window.", 26, y, bodyW - 52, new Font("Segoe UI", 9f), "muted", out note);
             y += 16;
@@ -6226,7 +6334,7 @@ namespace FiveMFrameCap
             string sureText = Loc.T("I understand that I lose my key binds and my graphics settings");
             Font sf = new Font("Segoe UI", 10f, FontStyle.Bold);
             int sh = Dpi.L(TextRenderer.MeasureText(sureText, sf, new Size(Dpi.S(bodyW - 52 - 26), 0), TextFormatFlags.WordBreak | TextFormatFlags.NoPadding).Height) + 12;
-            sure = new CheckBox(); sure.Text = sureText; sure.Font = sf; sure.AutoSize = false;
+            sure = new ThemedCheckBox(); sure.Text = sureText; sure.Font = sf; sure.AutoSize = false;
             sure.Left = 26; sure.Top = y; sure.Width = bodyW - 52; sure.Height = sh; Body.Controls.Add(sure);
             y += sh + 14;
             Font bf = new Font("Segoe UI", 10f, FontStyle.Bold);
@@ -6344,7 +6452,27 @@ namespace FiveMFrameCap
             g.ColumnHeadersHeight = 26; g.RowTemplate.Height = 24; g.BorderStyle = BorderStyle.None; g.ReadOnly = false;
             g.CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal;
             g.CurrentCellDirtyStateChanged += delegate { if (g.IsCurrentCellDirty) g.CommitEdit(DataGridViewDataErrorContexts.Commit); };
+            g.CellPainting += GridCheckPaint;
+            g.CellMouseEnter += delegate(object s0, DataGridViewCellEventArgs e0) { if (e0.RowIndex >= 0 && e0.ColumnIndex >= 0 && g.Columns[e0.ColumnIndex] is DataGridViewCheckBoxColumn) g.InvalidateCell(e0.ColumnIndex, e0.RowIndex); };
+            g.CellMouseLeave += delegate(object s1, DataGridViewCellEventArgs e1) { if (e1.RowIndex >= 0 && e1.ColumnIndex >= 0 && g.Columns[e1.ColumnIndex] is DataGridViewCheckBoxColumn) g.InvalidateCell(e1.ColumnIndex, e1.RowIndex); };
             return g;
+        }
+
+        // the tick box of the "Use" column in the colours of the blue outline buttons (the rest of the cell is drawn as usual)
+        static void GridCheckPaint(object sender, DataGridViewCellPaintingEventArgs e)
+        {
+            DataGridView g = (DataGridView)sender;
+            if (e.RowIndex < 0 || e.ColumnIndex < 0 || !(g.Columns[e.ColumnIndex] is DataGridViewCheckBoxColumn)) return;
+            e.Paint(e.CellBounds, e.PaintParts & ~DataGridViewPaintParts.ContentForeground);
+            bool selected = (e.State & DataGridViewElementStates.Selected) != 0;
+            Color behind = selected ? e.CellStyle.SelectionBackColor : e.CellStyle.BackColor;
+            int bs = Dpi.S(18);
+            Rectangle box = new Rectangle(e.CellBounds.X + (e.CellBounds.Width - bs) / 2, e.CellBounds.Y + (e.CellBounds.Height - bs) / 2, bs - 1, bs - 1);
+            bool on = e.Value is bool && (bool)e.Value;
+            bool hot = false;
+            try { hot = e.CellBounds.Contains(g.PointToClient(Cursor.Position)); } catch (Exception) { }
+            CheckDraw.Box(e.Graphics, box, behind, on, hot ? 1f : 0f, g.Enabled, false);
+            e.Handled = true;
         }
         static DataGridViewColumn TextCol(string header, int width, bool fill)
         {
@@ -7000,7 +7128,7 @@ namespace FiveMFrameCap
             dnsFlush = Btn(Ico.Delete, "Clear DNS cache", 16, 50, 220, 44);
             dnsFlush.Click += delegate { RunDns("--dns-flush " + (cbExtraFlush.Checked ? "extra" : "plain"), "Clearing the DNS cache ...", "flush", null); }; cFlush.Controls.Add(dnsFlush);
             cFlush.Controls.Add(Small("Fixes \"site not found\" after a DNS or network change. It tries up to 3 times and checks the cache is really empty. Windows asks for permission first.", 252, 46, CardW - 270, 38, "muted"));
-            cbExtraFlush = new CheckBox(); cbExtraFlush.Text = Loc.T("Also clear the NetBIOS and ARP caches (a bit more thorough)"); cbExtraFlush.Left = 252; cbExtraFlush.Top = 84; cbExtraFlush.Width = 600; cbExtraFlush.Height = 24; cFlush.Controls.Add(cbExtraFlush);
+            cbExtraFlush = new ThemedCheckBox(); cbExtraFlush.Text = Loc.T("Also clear the NetBIOS and ARP caches (a bit more thorough)"); cbExtraFlush.Left = 252; cbExtraFlush.Top = 84; cbExtraFlush.Width = 600; cbExtraFlush.Height = 24; cFlush.Controls.Add(cbExtraFlush);
 
             Card cChange = NewCard("Change DNS", Ico.Globe, 348, 170); pageDns.Controls.Add(cChange);
             rbCf = new RadioButton(); rbCf.Text = Loc.T("Cloudflare (default)   1.1.1.1"); rbCf.Left = 16; rbCf.Top = 46; rbCf.Width = 300; rbCf.Height = 26; rbCf.Checked = true; cChange.Controls.Add(rbCf);
@@ -7552,7 +7680,7 @@ namespace FiveMFrameCap
             desc = new Label(); desc.Text = ""; desc.AutoSize = false; desc.Left = 16; desc.Top = 94; desc.Width = 250; desc.Height = 70; desc.Tag = "muted"; desc.Font = new Font("Segoe UI", 9f);
             desc.Anchor = AnchorStyles.Top | AnchorStyles.Left;
             p.Controls.Add(desc);
-            include = new CheckBox(); include.Text = Loc.T("Include in the clean"); include.AutoSize = false; include.Left = 14; include.Top = 172; include.Width = 250; include.Height = 28;
+            include = new ThemedCheckBox(); include.Text = Loc.T("Include in the clean"); include.AutoSize = false; include.Left = 14; include.Top = 172; include.Width = 250; include.Height = 28;
             include.Anchor = AnchorStyles.Top | AnchorStyles.Left;
             p.Controls.Add(include); p.Resize += delegate { int cw = Math.Max(Dpi.S(60), p.Width - Dpi.S(32)); foreach (Control cc in p.Controls) if (cc is Label || cc is CheckBox) cc.Width = cw; };
             return p;
@@ -7585,7 +7713,7 @@ namespace FiveMFrameCap
             cacheTotal = new Label(); cacheTotal.Left = 16; cacheTotal.Top = 12; cacheTotal.Width = CardW - 32; cacheTotal.Height = 28; cacheTotal.Font = new Font("Segoe UI", 11f, FontStyle.Bold); cacheTotal.Text = "..."; cacheTotal.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right; cGo.Controls.Add(cacheTotal);
             cacheClean = Btn(Ico.Delete, "Clean cache", 16, 54, 230, 48); cacheClean.Tag = "primary"; cacheClean.Font = new Font("Segoe UI", 10.5f, FontStyle.Bold); cacheClean.Click += CacheCleanClick; cGo.Controls.Add(cacheClean);
             cacheStart = Btn(Ico.Play, "Start FiveM", 256, 54, 200, 48); cacheStart.Font = new Font("Segoe UI", 10.5f, FontStyle.Bold); cacheStart.Enabled = false; cacheStart.Click += StartFiveMClick; cGo.Controls.Add(cacheStart);
-            cbPure = new CheckBox(); cbPure.Text = Loc.T("Pure mode (-pure_1)"); cbPure.Left = 476; cbPure.Top = 54; cbPure.Width = 300; cbPure.Height = 26; cGo.Controls.Add(cbPure);
+            cbPure = new ThemedCheckBox(); cbPure.Text = Loc.T("Pure mode (-pure_1)"); cbPure.Left = 476; cbPure.Top = 54; cbPure.Width = 300; cbPure.Height = 26; cGo.Controls.Add(cbPure);
             cGo.Controls.Add(Small("ignores local file changes; for troubleshooting mods", 498, 80, 420, 22, "muted"));
             // a second row on the same grid as the first: the button is as wide as "Clean cache" (same left and right edge), and its text starts under "Start FiveM"
             int iw = FitW("Desktop icon: pure mode", 230);
@@ -10935,6 +11063,22 @@ namespace FiveMFrameCap
                         ToggleSwitch tsOff = new ToggleSwitch();
                         Color tfTrack, tfRim, tfKnob; tsOff.SwitchColors(out tfTrack, out tfRim, out tfKnob);
                         rck(tfTrack != tsTrack && tfKnob == Theme.Text2 && tfRim == tfTrack, themeName + ": a switch that is off is grey with a grey knob and no blue rim");
+                        ThemedCheckBox cbOn = new ThemedCheckBox(); cbOn.Checked = true;
+                        Color cbF, cbB, cbM; cbOn.CheckColors(out cbF, out cbB, out cbM);
+                        rck(cbF == pbBack && cbB == pbBorder && cbM == pbFore, themeName + ": a tick box that is ticked has the same colours as the blue button (fill " + cbF.Name + ", tick " + cbM.Name + ")");
+                        ThemedCheckBox cbOff = new ThemedCheckBox();
+                        Color cbF2, cbB2, cbM2; cbOff.CheckColors(out cbF2, out cbB2, out cbM2);
+                        rck(cbF2 == Theme.Bg3 && cbF2 != cbF && cbB2 != cbB, themeName + ": a tick box that is not ticked is grey");
+                        Pill pillOn = new Pill("All"); pillOn.Selected = true;
+                        Color plF, plB, plT; pillOn.PillColors(out plF, out plB, out plT);
+                        rck(plF == pbBack && plB == pbBorder && plT == pbFore, themeName + ": a selected pill has the same colours as the blue button (fill " + plF.Name + ", text " + plT.Name + ")");
+                        Pill pillOff = new Pill("All");
+                        Color plF2, plB2, plT2; pillOff.PillColors(out plF2, out plB2, out plT2);
+                        rck(plF2 == Theme.Bg3 && plT2 == Theme.Text2 && plB2 == Theme.Border, themeName + ": a pill that is not selected is grey");
+                        GlyphButton gbOn = new GlyphButton(Ico.Sun); gbOn.Selected = true;
+                        Color gbF, gbB, gbG; gbOn.GlyphColors(out gbF, out gbB, out gbG);
+                        Color gbWantF, gbWantB, gbWantG; Theme.Outline(Theme.Frame, 0f, false, out gbWantF, out gbWantB, out gbWantG);
+                        rck(gbF == gbWantF && gbB == gbWantB && gbG == gbWantG && gbF != Theme.Primary, themeName + ": the selected theme button in the title bar has the blue outline colours (fill " + gbF.Name + ")");
                         IconButton off = new IconButton(); off.Tag = "primary"; off.Enabled = false;
                         Color offBack, offFore, offBorder; off.ButtonColors(out offBack, out offFore, out offBorder);
                         rck(offBack == Theme.Bg3 && offFore == Theme.Text2, themeName + ": a blue button that is switched off is grey");
