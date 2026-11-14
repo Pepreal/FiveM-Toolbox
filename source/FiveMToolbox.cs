@@ -5967,6 +5967,29 @@ namespace FiveMFrameCap
         const string ApiUrl = "https://api.github.com/repos/Pepreal/FiveM-Toolbox/releases?per_page=15";
         public static Func<string> Fetch = FetchReal;     // a test puts a pretend answer here
         public static Action<string> OpenHook = null;     // a test collects the address instead of opening it
+        public static bool? OffOverride = null;           // a test: switched off (true) or on (false), whatever settings.txt says
+        public static bool MainWindowAsks = false;        // Main sets it for a real start; the windows that the tests make never ask GitHub
+
+        // "updatecheck=off" in settings.txt: the program never asks GitHub
+        public static bool Off() { return OffOverride.HasValue ? OffOverride.Value : Settings.Get("updatecheck", "on").Trim().ToLowerInvariant() == "off"; }
+
+        static bool askedOnce = false; static string askedAnswer = null;
+        public static void ResetCache() { lock (typeof(UpdateCheck)) { askedOnce = false; askedAnswer = null; } }
+
+        // The answer of Check, but GitHub is asked once for each run: the welcome window and the main window share it.
+        public static string CheckOnce()
+        {
+            lock (typeof(UpdateCheck)) { if (askedOnce) return askedAnswer; }
+            string r = Check();
+            lock (typeof(UpdateCheck)) { askedOnce = true; askedAnswer = r; }
+            return r;
+        }
+
+        // for the tests: a click on a link label
+        public static void ClickLink(LinkLabel l)
+        {
+            typeof(LinkLabel).GetMethod("OnLinkClicked", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(l, new object[] { new LinkLabelLinkClickedEventArgs(l.Links[0]) });
+        }
 
         static string FetchReal()
         {
@@ -6007,6 +6030,7 @@ namespace FiveMFrameCap
         {
             try
             {
+                if (Off()) { AppLog.Debug("update check: switched off in settings.txt (updatecheck=off)"); return null; }
                 string newest = Newest(Fetch());
                 if (newest == null) { AppLog.Debug("update check: no version number in the answer of GitHub"); return null; }
                 AppLog.Debug("update check: the newest version on GitHub is " + newest + ", this program is " + Info.Version);
@@ -6037,7 +6061,7 @@ namespace FiveMFrameCap
         {
             Thread t = new Thread(delegate()
             {
-                string newer = UpdateCheck.Check();
+                string newer = UpdateCheck.CheckOnce();
                 if (newer == null) return;
                 pendingUpdate = newer;
                 try { if (IsHandleCreated && !IsDisposed) BeginInvoke(new Action(delegate { ShowUpdate(newer); })); } catch (Exception) { }
@@ -6059,12 +6083,8 @@ namespace FiveMFrameCap
         // for --review-test
         public string TestUpdateText() { return updateLink.Visible ? updateLink.Text : null; }
         public string TestCopyText() { return copyLink.Text; }
-        public void TestClickCopy() { ClickLink(copyLink); }
-        public void TestClickUpdate() { ClickLink(updateLink); }
-        static void ClickLink(LinkLabel l)
-        {
-            typeof(LinkLabel).GetMethod("OnLinkClicked", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(l, new object[] { new LinkLabelLinkClickedEventArgs(l.Links[0]) });
-        }
+        public void TestClickCopy() { UpdateCheck.ClickLink(copyLink); }
+        public void TestClickUpdate() { UpdateCheck.ClickLink(updateLink); }
 
         public DisclaimerForm() : base(false, false, 40, true)
         {
@@ -6274,7 +6294,7 @@ namespace FiveMFrameCap
         ToolTip tip = new ToolTip();
         Panel pageCap, pageDns, pageCache, pageGfx, footer, statusBar;
         Label copyLabel;
-        LinkLabel startLink;
+        LinkLabel startLink, updateNote;
         // frame cap page
         Label gpuLabel, gpuDrv, gpuMem, modeLabel, capHint, gpuSwitchText;
         ToggleSwitch gpuSwitch;
@@ -6444,6 +6464,10 @@ namespace FiveMFrameCap
             startLink = new LinkLabel(); startLink.Text = Loc.T("Show the start window next time"); startLink.Dock = DockStyle.Left; startLink.Width = 340; startLink.TextAlign = ContentAlignment.MiddleLeft;
             startLink.LinkClicked += delegate { Settings.Set("startpage", "ask"); Log("The start window will show next time."); };
             statusBar.Controls.Add(startLink);
+            // the notice about a newer version, left of the credit; hidden until the check has found one
+            updateNote = new LinkLabel(); updateNote.AutoSize = false; updateNote.Dock = DockStyle.Right; updateNote.TextAlign = ContentAlignment.MiddleRight; updateNote.Visible = false;
+            updateNote.LinkClicked += delegate { UpdateCheck.Open(UpdateCheck.ReleasesUrl); };
+            statusBar.Controls.Add(updateNote); statusBar.Controls.SetChildIndex(updateNote, 0);   // it is docked after the credit, so it sits left of the credit
             footer.Controls.Add(statusBar);
             activity = new ActivityCard(); activity.Dock = DockStyle.Top; footer.Controls.Add(activity);
 
@@ -6457,10 +6481,40 @@ namespace FiveMFrameCap
             Theme.Changed += OnThemeChanged;
             FormClosed += delegate { Theme.Changed -= OnThemeChanged; runTimer.Stop(); tip.Dispose(); };
             ShowPage(startPage);
-            Shown += delegate { AppLog.Debug("main window: bounds " + Bounds + ", client " + ClientSize + ", title bar " + TitleBar.Height + ", app icon box " + (IconBox != null ? IconBox.Bounds.ToString() : "none")); LayoutFooter(false); Rescan(null, true); RefreshDns(); };
+            Shown += delegate { AppLog.Debug("main window: bounds " + Bounds + ", client " + ClientSize + ", title bar " + TitleBar.Height + ", app icon box " + (IconBox != null ? IconBox.Bounds.ToString() : "none")); LayoutFooter(false); Rescan(null, true); RefreshDns(); StartUpdateNote(); };
         }
 
-        void OnThemeChanged() { try { if (IsHandleCreated && !IsDisposed) BeginInvoke(new Action(delegate { Theme.Apply(this); UpdateThemeButtons(); })); } catch (Exception) { } }
+        // Asks GitHub in the background (once for each run, the welcome window shares the answer). Only for a real start, never for the windows that the tests make.
+        void StartUpdateNote()
+        {
+            if (!UpdateCheck.MainWindowAsks) return;
+            Thread t = new Thread(delegate()
+            {
+                string newer = UpdateCheck.CheckOnce();
+                if (newer != null) Ui(delegate { ShowUpdateNote(newer); });
+            });
+            t.IsBackground = true; t.Start();
+        }
+
+        public void ShowUpdateNote(string version)
+        {
+            if (updateNote.Visible) return;
+            updateNote.Text = string.Format(Loc.T("New version: {0}"), version);
+            tip.SetToolTip(updateNote, string.Format(Loc.T("New version available: {0}. Click here to download it."), version));
+            RecolourUpdateNote();
+            updateNote.Width = TextRenderer.MeasureText(updateNote.Text, updateNote.Font, new Size(int.MaxValue, int.MaxValue), TextFormatFlags.NoPadding).Width + Dpi.S(24);
+            updateNote.Visible = true;
+        }
+
+        void RecolourUpdateNote() { updateNote.LinkColor = Theme.Warn; updateNote.ActiveLinkColor = Theme.Warn; updateNote.VisitedLinkColor = Theme.Warn; }
+
+        // for --review-test: left, right, credit left, middle height of the notice, middle height of the credit, visible (1/0)
+        public int[] TestUpdateNote(out string text) { text = updateNote.Visible ? updateNote.Text : null; return new int[] { updateNote.Left, updateNote.Right, copyLabel.Left, updateNote.Top + updateNote.Height / 2, copyLabel.Top + copyLabel.Height / 2, updateNote.Visible ? 1 : 0 }; }
+        public void TestClickUpdateNote() { UpdateCheck.ClickLink(updateNote); }
+        // the text of the link, of the notice and of the credit is in the middle of the bar (not at the top)
+        public bool TestFooterTextMiddle() { return startLink.TextAlign == ContentAlignment.MiddleLeft && updateNote.TextAlign == ContentAlignment.MiddleRight && copyLabel.TextAlign == ContentAlignment.MiddleRight; }
+
+        void OnThemeChanged() { try { if (IsHandleCreated && !IsDisposed) BeginInvoke(new Action(delegate { Theme.Apply(this); UpdateThemeButtons(); RecolourUpdateNote(); })); } catch (Exception) { } }
 
         void UpdateThemeButtons()
         {
@@ -7320,6 +7374,16 @@ namespace FiveMFrameCap
             for (int i = 0; i < 20; i++) { Application.DoEvents(); Thread.Sleep(40); }
             DpiCheck.Tree(pageCache, "FiveM cache tab with Reset mode on", ck);
             DemoResetMode(false);
+            // the footer, also with the notice about a newer version (a pretend version number): the link, the notice and the credit apart, inside the bar, on one height, their text fits
+            ShowPage(0);
+            ShowUpdateNote("0.8.2");
+            for (int i = 0; i < 10; i++) { Application.DoEvents(); Thread.Sleep(40); }
+            DpiCheck.Container(statusBar, "footer with the notice about a newer version", ck);
+            ck(startLink.Right <= updateNote.Left && updateNote.Right <= copyLabel.Left, "footer: the link, the notice and the credit stand in this order and apart (" + startLink.Right + " <= " + updateNote.Left + ", " + updateNote.Right + " <= " + copyLabel.Left + ")");
+            int mid = copyLabel.Top + copyLabel.Height / 2;
+            ck(Math.Abs((updateNote.Top + updateNote.Height / 2) - mid) <= 1 && Math.Abs((startLink.Top + startLink.Height / 2) - mid) <= 1, "footer: the link, the notice and the credit are on the same height (" + (startLink.Top + startLink.Height / 2) + ", " + (updateNote.Top + updateNote.Height / 2) + ", " + mid + ")");
+            ck(TextRenderer.MeasureText(updateNote.Text, updateNote.Font, new Size(int.MaxValue, int.MaxValue), TextFormatFlags.NoPadding).Width <= updateNote.Width, "footer: the text of the notice fits its width (" + updateNote.Width + " px)");
+            ck(TextRenderer.MeasureText(copyLabel.Text, copyLabel.Font, new Size(int.MaxValue, int.MaxValue), TextFormatFlags.NoPadding).Width <= copyLabel.Width, "footer: the text of the credit fits its width (" + copyLabel.Width + " px)");
         }
 
         // for --log-fold-test: the text of the log as it is shown now
@@ -8496,6 +8560,7 @@ namespace FiveMFrameCap
             new string[] { "A job is still running. Wait until it has finished, then close the window.", "Er loopt nog een taak. Wacht tot die klaar is en sluit dan het venster.", "Es läuft noch eine Aufgabe. Warte, bis sie fertig ist, und schließe dann das Fenster.", "Une tâche est encore en cours. Attends qu'elle soit terminée, puis ferme la fenêtre.", "Todavía hay una tarea en curso. Espera a que termine y luego cierra la ventana." },
             new string[] { "Made by:", "Gemaakt door:", "Erstellt von:", "Créé par :", "Hecho por:" },
             new string[] { "New version available: {0}. Click here to download it.", "Nieuwe versie beschikbaar: {0}. Klik hier om hem te downloaden.", "Neue Version verfügbar: {0}. Hier klicken zum Herunterladen.", "Nouvelle version disponible : {0}. Cliquez ici pour la télécharger.", "Nueva versión disponible: {0}. Haz clic aquí para descargarla." },
+            new string[] { "New version: {0}", "Nieuwe versie: {0}", "Neue Version: {0}", "Nouvelle version : {0}", "Nueva versión: {0}" },
             new string[] { "Put back {0} build(s): they are not in Radeon Software any more. Radeon Software was restarted.", "{0} build(s) teruggezet: ze staan niet meer in Radeon Software. Radeon Software is opnieuw gestart.", "{0} Build(s) zurückgesetzt: sie sind nicht mehr in Radeon Software. Radeon Software wurde neu gestartet.", "{0} build(s) rétablie(s) : elles ne sont plus dans Radeon Software. Radeon Software a été redémarré.", "{0} build(s) restaurada(s): ya no están en Radeon Software. Se reinició Radeon Software." },
             new string[] { "Network card", "Netwerkkaart", "Netzwerkkarte", "Carte réseau", "Tarjeta de red" },
             new string[] { "Speed", "Snelheid", "Geschwindigkeit", "Vitesse", "Velocidad" },
@@ -10716,6 +10781,11 @@ namespace FiveMFrameCap
                     rck(UpdateCheck.Check() == null, "the check gives nothing (and no crash) when GitHub can not be reached");
                     List<string> opened = new List<string>();
                     UpdateCheck.OpenHook = delegate(string u0) { opened.Add(u0); };
+                    UpdateCheck.OffOverride = true; bool askedWhileOff = false;
+                    UpdateCheck.Fetch = delegate { askedWhileOff = true; return "[{\"tag_name\":\"v99.0.0\"}]"; };
+                    rck(UpdateCheck.Check() == null && !askedWhileOff, "updatecheck=off: GitHub is not asked");
+                    UpdateCheck.OffOverride = false;
+                    UpdateCheck.ResetCache();
                     UpdateCheck.Fetch = delegate { return "[{\"tag_name\":\"v99.0.0\"}]"; };
                     using (DisclaimerForm dfm = new DisclaimerForm())
                     {
@@ -10734,6 +10804,7 @@ namespace FiveMFrameCap
                         rck(opened.Count == 1 && opened[0] == "https://github.com/Pepreal/FiveM-Toolbox/releases", "a click on the notice opens the releases page (" + string.Join(",", opened.ToArray()) + ")");
                     }
                     UpdateCheck.Fetch = delegate { return "[{\"tag_name\":\"v" + Info.Version + "\"}]"; };
+                    UpdateCheck.ResetCache();
                     using (DisclaimerForm dfm2 = new DisclaimerForm())
                     {
                         dfm2.Show(); rpump(); int h1 = dfm2.Height;
@@ -10741,6 +10812,39 @@ namespace FiveMFrameCap
                         Thread.Sleep(500); rpump();
                         rck(dfm2.TestUpdateText() == null && dfm2.Height == h1, "no notice, and the same window size, when the program is the newest");
                     }
+                    // the main window: the same notice at the bottom right, left of the credit (the answer is asked once for each run)
+                    int asked = 0;
+                    UpdateCheck.ResetCache(); UpdateCheck.MainWindowAsks = true;
+                    UpdateCheck.Fetch = delegate { asked++; return "[{\"tag_name\":\"v99.0.0\"}]"; };
+                    MainForm mu = new MainForm(0); mu.Show();
+                    string muText = null; int[] mup = mu.TestUpdateNote(out muText);
+                    DateTime muEnd = DateTime.UtcNow.AddSeconds(40);
+                    while (muText == null && DateTime.UtcNow < muEnd) { Application.DoEvents(); Thread.Sleep(50); mup = mu.TestUpdateNote(out muText); }
+                    rck(muText != null && muText.Contains("99.0.0"), "the main window shows the notice (" + muText + ")");
+                    rck(mup[0] > 0 && mup[1] <= mup[2] && Math.Abs(mup[3] - mup[4]) <= 1, "the notice is left of the credit and on its height (notice " + mup[0] + "-" + mup[1] + ", credit from " + mup[2] + ", heights " + mup[3] + " and " + mup[4] + ")");
+                    rck(mu.TestFooterTextMiddle(), "the text of the link, the notice and the credit is in the middle of the bar");
+                    opened.Clear(); mu.TestClickUpdateNote();
+                    rck(opened.Count == 1 && opened[0] == "https://github.com/Pepreal/FiveM-Toolbox/releases", "a click on the notice in the main window opens the releases page");
+                    mu.Close();
+                    using (DisclaimerForm dsh = new DisclaimerForm()) { dsh.StartUpdateCheck(); Thread.Sleep(300); }
+                    rck(asked == 1, "GitHub is asked once for each run, also when the welcome window and the main window both ask (asked " + asked + " times)");
+                    UpdateCheck.ResetCache(); asked = 0;
+                    UpdateCheck.Fetch = delegate { asked++; return "[{\"tag_name\":\"v" + Info.Version + "\"}]"; };
+                    MainForm mu2 = new MainForm(0); mu2.Show();
+                    DateTime mu2End = DateTime.UtcNow.AddSeconds(10);
+                    while (DateTime.UtcNow < mu2End) { Application.DoEvents(); Thread.Sleep(50); }
+                    string mu2Text; mu2.TestUpdateNote(out mu2Text);
+                    rck(asked == 1 && mu2Text == null, "the main window shows nothing when the program is the newest (asked " + asked + " time)");
+                    mu2.Close();
+                    UpdateCheck.MainWindowAsks = false; UpdateCheck.ResetCache(); asked = 0;
+                    UpdateCheck.Fetch = delegate { asked++; return "[{\"tag_name\":\"v99.0.0\"}]"; };
+                    MainForm mu3 = new MainForm(0); mu3.Show();
+                    DateTime mu3End = DateTime.UtcNow.AddSeconds(8);
+                    while (DateTime.UtcNow < mu3End) { Application.DoEvents(); Thread.Sleep(50); }
+                    string mu3Text; mu3.TestUpdateNote(out mu3Text);
+                    rck(asked == 0 && mu3Text == null, "a main window that a test makes never asks GitHub (asked " + asked + " times)");
+                    mu3.Close();
+                    UpdateCheck.OffOverride = null; UpdateCheck.ResetCache();
                     UpdateCheck.OpenHook = null; UpdateCheck.Fetch = realFetch;
 
                     // the backups go in a folder "backup" next to the exe (the folder of the log file), the small state files stay in the data folder
@@ -11013,6 +11117,14 @@ namespace FiveMFrameCap
                         DpiCheck.Dialog(dsm[k], dsn[k], dck);
                         dsm[k].Close();
                     }
+                    // the welcome window with the notice about a newer version (a pretend version number): it grows by one line, everything stays inside and apart
+                    DisclaimerForm dnu = new DisclaimerForm();
+                    dnu.Show();
+                    for (int i = 0; i < 14; i++) { Application.DoEvents(); Thread.Sleep(40); }
+                    dnu.ShowUpdate("0.8.2");
+                    for (int i = 0; i < 14; i++) { Application.DoEvents(); Thread.Sleep(40); }
+                    DpiCheck.Dialog(dnu, "welcome window with the notice about a newer version", dck);
+                    dnu.Close();
                 }
                 catch (Exception dex) { dfail++; ds.AppendLine("FAIL  EXCEPTION " + dex); }
                 ds.AppendLine(dfail == 0 ? "ALL PASSED (" + dpass + " checks)" : "FAILED: " + dfail + " of " + (dpass + dfail));
@@ -11040,6 +11152,13 @@ namespace FiveMFrameCap
                     }
                 }
                 f.ShowPage(0);
+                f.ShowUpdateNote("0.8.2");   // a pretend version number: GitHub is not asked
+                for (int i = 0; i < 12; i++) { Application.DoEvents(); Thread.Sleep(50); }
+                using (Bitmap bmpU = new Bitmap(f.Width, f.Height))
+                {
+                    Snap(f, bmpU);
+                    bmpU.Save(args[1].Replace(".png", "-update-note.png"), System.Drawing.Imaging.ImageFormat.Png);
+                }
                 string[] kinds = new string[] { "run", "ok", "info", "bad" };
                 foreach (string kd in kinds)
                 {
@@ -11124,6 +11243,7 @@ namespace FiveMFrameCap
                 int relaunchPage;
                 if (args[ai] == "--page" && int.TryParse(args[ai + 1], out relaunchPage) && relaunchPage >= 0 && relaunchPage <= 3)
                 {
+                    UpdateCheck.MainWindowAsks = true;
                     Application.Run(new MainForm(relaunchPage));
                     return 0;
                 }
@@ -11153,6 +11273,7 @@ namespace FiveMFrameCap
                     if (c.WantAdmin && !DnsTool.IsAdmin() && RestartElevated("--page " + firstPage)) return 0;
                 }
             }
+            UpdateCheck.MainWindowAsks = true;
             Application.Run(new MainForm(firstPage));
             return 0;
         }
