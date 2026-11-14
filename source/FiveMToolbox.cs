@@ -22,8 +22,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Pepreal")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 Pepreal. MIT License.")]
 [assembly: AssemblyProduct("FiveM Toolbox")]
-[assembly: AssemblyVersion("0.8.2.0")]
-[assembly: AssemblyFileVersion("0.8.2.0")]
+[assembly: AssemblyVersion("0.8.3.0")]
+[assembly: AssemblyFileVersion("0.8.3.0")]
 [assembly: DefaultDllImportSearchPaths(DllImportSearchPath.System32)]   // every DllImport (AMD, NVIDIA, Windows) loads from the Windows folder only, never from the folder of the exe
 
 namespace FiveMFrameCap
@@ -453,7 +453,7 @@ namespace FiveMFrameCap
             return drawnIcon;
         }
 
-        public const string Version = "0.8.2";
+        public const string Version = "0.8.3";
         public const string AppName = "FiveM Toolbox";
         public const string ExeName = "FiveMToolbox";
         public const string Folder = "FiveMToolbox";
@@ -3185,6 +3185,16 @@ namespace FiveMFrameCap
             border = dark ? Fx.Mix(Fx.Mix(Primary, AccentText, 0.75f), AccentText, hover) : Fx.Mix(Primary, Fx.Mix(Primary, Color.Black, 0.20f), hover);
         }
 
+        // The same outline look in red, for a switch that does something dangerous (the Reset mode switch): a dark red track, a red border, a red knob.
+        public static void DangerOutline(Color behind, float hover, out Color track, out Color border, out Color knob)
+        {
+            bool dark = IsDark;
+            Color lift = dark ? Fx.Mix(Bad, Color.White, 0.25f) : Bad;     // a lighter red for the border and the knob on the dark theme
+            track = Fx.Mix(behind, Bad, (dark ? 0.30f : 0.14f) + hover * (dark ? 0.12f : 0.08f));
+            border = Fx.Mix(lift, dark ? Color.White : Color.Black, hover * 0.15f);
+            knob = dark ? lift : Fx.Mix(Bad, Color.Black, 0.15f);
+        }
+
         public static void TitleBar(Form f)
         {
             try
@@ -5244,6 +5254,7 @@ namespace FiveMFrameCap
     {
         bool on;
         readonly Fader f, hv;
+        public bool Danger = false;     // true: a switch that is on is red, not blue (the Reset mode switch)
         public event EventHandler CheckedChanged;
 
         public ToggleSwitch()
@@ -5280,7 +5291,8 @@ namespace FiveMFrameCap
         {
             Color behind = Parent != null ? Parent.BackColor : Theme.Bg1;
             Color offTrack = Fx.Mix(Theme.Bg4, Theme.Border, 0.5f + 0.3f * hv.Value);
-            Color onFill, onBorder, onKnob; Theme.Outline(behind, hv.Value, false, out onFill, out onBorder, out onKnob);
+            Color onFill, onBorder, onKnob;
+            if (Danger) Theme.DangerOutline(behind, hv.Value, out onFill, out onBorder, out onKnob); else Theme.Outline(behind, hv.Value, false, out onFill, out onBorder, out onKnob);
             track = Fx.Mix(offTrack, onFill, f.Value);
             rim = Fx.Mix(offTrack, onBorder, f.Value);
             knob = Fx.Mix(Theme.Text2, onKnob, f.Value);
@@ -6194,12 +6206,18 @@ namespace FiveMFrameCap
         public string TestCopyText() { return copyLink.Text; }
         public void TestClickCopy() { UpdateCheck.ClickLink(copyLink); }
         public void TestClickUpdate() { UpdateCheck.ClickLink(updateLink); }
+        // for --review-test: the texts of the buttons in the window, and whether the tick box "do not show again" is there
+        public string[] TestButtons() { List<string> r = new List<string>(); foreach (Control c in Body.Controls) if (c is IconButton) r.Add(c.Text); return r.ToArray(); }
+        public bool TestHasDontBox() { return Body.Controls.Contains(dont); }
 
-        public DisclaimerForm() : base(false, false, 40, true)
+        public DisclaimerForm() : this(false) { }
+
+        // infoOnly = opened from the main window to read it again: no tick box, no Quit, one button "Got it", centred on the main window
+        public DisclaimerForm(bool infoOnly) : base(false, false, 40, true)
         {
             Text = Info.AppName;
             Icon = Info.AppIcon();
-            StartPosition = FormStartPosition.CenterScreen;
+            StartPosition = infoOnly ? FormStartPosition.CenterParent : FormStartPosition.CenterScreen;
             Font = new Font("Segoe UI", 9.5f);
             int bodyW = 470;
             Font normal = new Font("Segoe UI", 9f);
@@ -6228,11 +6246,11 @@ namespace FiveMFrameCap
             y = UiUtil.Wrapped(Body, "By continuing you accept these risks. Where it is possible, the old setting is saved or backed up first.", 26, y, bodyW - 52, normal, null, out p2);
             y += 16;
 
-            dont = new ThemedCheckBox(); dont.Text = Loc.T("Do not show this window again"); dont.Left = 26; dont.Top = y; dont.Width = bodyW - 52; dont.Height = 26; Body.Controls.Add(dont); y += 40;
+            dont = new ThemedCheckBox(); dont.Text = Loc.T("Do not show this window again"); dont.Left = 26; dont.Top = y; dont.Width = bodyW - 52; dont.Height = 26; if (!infoOnly) { Body.Controls.Add(dont); y += 40; }
 
-            IconButton ok = new IconButton(); ok.Glyph = Ico.Accept; ok.Text = Loc.T("I understand, continue"); ok.Tag = "primary"; ok.Left = 26; ok.Top = y; ok.Width = 262; ok.Height = 42;
+            IconButton ok = new IconButton(); ok.Glyph = Ico.Accept; ok.Text = Loc.T(infoOnly ? "Got it" : "I understand, continue"); ok.Tag = "primary"; ok.Left = 26; ok.Top = y; ok.Width = infoOnly ? 150 : 262; ok.Height = 42;
             ok.Font = new Font("Segoe UI", 10f, FontStyle.Bold); ok.DialogResult = DialogResult.OK; Body.Controls.Add(ok);
-            IconButton quit = new IconButton(); quit.Glyph = Ico.Cancel; quit.Text = Loc.T("Quit"); quit.Left = 298; quit.Top = y; quit.Width = 120; quit.Height = 42; quit.DialogResult = DialogResult.Cancel; Body.Controls.Add(quit);
+            IconButton quit = new IconButton(); quit.Glyph = Ico.Cancel; quit.Text = Loc.T("Quit"); quit.Left = 298; quit.Top = y; quit.Width = 120; quit.Height = 42; quit.DialogResult = DialogResult.Cancel; if (!infoOnly) Body.Controls.Add(quit);
             y += 42 + 14;
 
             // the copyright line is a link to the page of this program on GitHub
@@ -6246,7 +6264,7 @@ namespace FiveMFrameCap
             Shown += delegate { if (pendingUpdate != null) ShowUpdate(pendingUpdate); };   // the answer came before the window was there
             y += 30;
 
-            AcceptButton = ok; CancelButton = quit;
+            AcceptButton = ok; CancelButton = infoOnly ? (IButtonControl)ok : quit;
             ClientSize = new Size(bodyW + 12, TitleBar.Height + y + 6);
             Theme.Apply(this);
         }
@@ -6399,7 +6417,8 @@ namespace FiveMFrameCap
         NumBox gfxBudget; DropBox gfxPost; Label gfxBudgetNow, gfxPostNow, gfxUiNow, gfxStutterNow, gfxBudgetHint, gfxMeterText; MeterBar gfxMeterBar; bool meterReading; string meterLuid; long meterTotal; VramTracker meterTracker = new VramTracker(); ToggleSwitch gfxUiFix, gfxStutterFix; Label gfxStutterWarn; Card gfxCard, gfxOptCard; IconButton gfxRecommend; int gfxRecN = -1; IconButton gfxApply, gfxClose, gfxHighest, gfxNormal, gfxOpen;
         string cacheMeasuredRoot = null;
         DateTime cacheMeasuredAt = DateTime.MinValue;
-        GlyphButton themeSystem, themeLight, themeDark;
+        GlyphButton themeSystem, themeLight, themeDark, discBtn, gitBtn;
+        Action<DisclaimerForm> disclaimerShow = null;     // a test shows the window itself
         ToolTip tip = new ToolTip();
         Panel pageCap, pageDns, pageCache, pageGfx, footer, statusBar;
         LinkLabel copyLabel;
@@ -6441,6 +6460,8 @@ namespace FiveMFrameCap
         bool readOnlyJob = false;   // the running job only reads (the search): the window may be closed then
         bool inDeepChange = false;
         const int CardW = 950;
+        // the tabs in the title bar start after the language icon and the two small buttons next to it; the window is never narrower than MainMinWidth, so that the tabs of every language end before the buttons on the right
+        public const int TabsLeft = 108, MainMinWidth = 1060, AppearW = 172;
 
         static DataGridView MakeGrid(int left, int top, int width, int height)
         {
@@ -6526,8 +6547,8 @@ namespace FiveMFrameCap
             Text = Info.AppName + " " + Info.Version + (DnsTool.IsAdmin() ? " - " + Loc.T("administrator") : "") + Finder.TestModeText();
             Icon = Info.AppIcon();
             Rectangle wa = Dpi.LogicalWorkArea();
-            Width = Math.Min(1000, wa.Width - 40); Height = Math.Min(1040, wa.Height - 30);
-            MinimumSize = new Size(960, 560);
+            Width = Math.Min(MainMinWidth + 10, wa.Width - 40); Height = Math.Min(1040, wa.Height - 30);
+            MinimumSize = new Size(Math.Min(MainMinWidth, wa.Width), 560);
             StartPosition = FormStartPosition.CenterScreen;
             Font = new Font("Segoe UI", 9.5f);
 
@@ -6535,7 +6556,15 @@ namespace FiveMFrameCap
             ChromeTab[] tabs = new ChromeTab[4];
             tabCap = new ChromeTab("gauge", "Frame cap"); tabDns = new ChromeTab(Ico.Globe, "DNS tools"); tabCache = new ChromeTab(Ico.Delete, "FiveM cache"); tabGfx = new ChromeTab(Ico.Palette, "Graphics");
             tabs[0] = tabCap; tabs[1] = tabDns; tabs[2] = tabCache; tabs[3] = tabGfx;
-            int tx = 46;
+            // next to the program icon (it opens the language menu): the disclaimer, and the GitHub page of the program
+            discBtn = new GlyphButton(Ico.Info); discBtn.Size = new Size(30, 30); discBtn.Left = 38; discBtn.Top = (TitleBar.Height - 30) / 2;
+            discBtn.Click += delegate { ShowDisclaimer(); };
+            tip.SetToolTip(discBtn, Loc.T("Show the disclaimer"));
+            gitBtn = new GlyphButton(Ico.Link); gitBtn.Size = new Size(30, 30); gitBtn.Left = 70; gitBtn.Top = (TitleBar.Height - 30) / 2;
+            gitBtn.Click += delegate { UpdateCheck.Open(UpdateCheck.RepoUrl); };
+            tip.SetToolTip(gitBtn, Loc.T("Open the page of this program on GitHub"));
+            TitleBar.Controls.Add(discBtn); TitleBar.Controls.Add(gitBtn);
+            int tx = TabsLeft;
             foreach (int pick in Info.PageOrder)        // left to right: FiveM cache, Frame cap, DNS tools, Graphics
             {
                 int page = pick;
@@ -6546,7 +6575,7 @@ namespace FiveMFrameCap
             }
 
             // Appearance: three small icons instead of a drop-down
-            Panel appearPanel = new Panel(); appearPanel.Dock = DockStyle.Right; appearPanel.Width = 172; appearPanel.Tag = "frame";
+            Panel appearPanel = new Panel(); appearPanel.Dock = DockStyle.Right; appearPanel.Width = AppearW; appearPanel.Tag = "frame";
             themeSystem = new GlyphButton(Ico.Monitor); themeSystem.Left = 46; themeSystem.Top = 8;
             themeLight = new GlyphButton(Ico.Sun); themeLight.Left = 86; themeLight.Top = 8;
             themeDark = new GlyphButton(Ico.Moon); themeDark.Left = 126; themeDark.Top = 8;
@@ -6583,7 +6612,7 @@ namespace FiveMFrameCap
             logPanel.ReportCopied += delegate { activity.Finish("ok", Loc.T("Report copied"), Loc.T("The whole log is on your clipboard. Paste it in a message. It has file paths and your PC's name in it.")); };
             footer.Controls.Add(logPanel);
             statusBar = new Panel(); statusBar.Dock = DockStyle.Bottom; statusBar.Height = 30; statusBar.Tag = "body";
-            // the credit on the right ("v0.8.2      Made by: Pepreal 2026", like the FiveM Server Manager), the link to the start window on the left
+            // the credit on the right ("v0.8.3      Made by: Pepreal 2026", like the FiveM Server Manager), the link to the start window on the left
             // "Made by: Pepreal 2026" is a link to the GitHub page of the program (grey like the rest, underlined when the mouse is over it); the version in front of it is plain text
             string verPart = "v" + Info.Version + "      ", madePart = Loc.T("Made by:") + " " + Info.Owner + " " + Info.Year;
             copyLabel = new LinkLabel(); copyLabel.Text = verPart + madePart; copyLabel.LinkArea = new LinkArea(verPart.Length, madePart.Length); copyLabel.LinkBehavior = LinkBehavior.HoverUnderline;
@@ -6646,6 +6675,24 @@ namespace FiveMFrameCap
         public void TestClickUpdateNote() { UpdateCheck.ClickLink(updateNote); }
         // "Made by: ..." is a link to the GitHub page, the version in front of it is not
         public void TestClickCredit() { UpdateCheck.ClickLink(copyLabel); }
+        // the two buttons next to the program icon: right edge of the icon, left and right edge of the disclaimer button, left and right edge of the GitHub button, left edge of the first tab, middle height of the icon and of the two buttons
+        public int[] TestTitleButtons()
+        {
+            int firstTab = int.MaxValue; foreach (ChromeTab ct in TabsByPage()) firstTab = Math.Min(firstTab, ct.Left);
+            return new int[] { IconBox.Right, discBtn.Left, discBtn.Right, gitBtn.Left, gitBtn.Right, firstTab, IconBox.Top + IconBox.Height / 2, discBtn.Top + discBtn.Height / 2, gitBtn.Top + gitBtn.Height / 2 };
+        }
+        public string[] TestTitleButtonTips() { return new string[] { tip.GetToolTip(discBtn), tip.GetToolTip(gitBtn) }; }
+        public void TestClickTitle(bool github) { typeof(Control).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(github ? gitBtn : discBtn, new object[] { EventArgs.Empty }); }
+        public void TestDisclaimerHook(Action<DisclaimerForm> show) { disclaimerShow = show; }
+
+        // the disclaimer button: the welcome window again, only to read (no tick box, no Quit, one button to close it)
+        void ShowDisclaimer()
+        {
+            using (DisclaimerForm d = new DisclaimerForm(true))
+            {
+                if (disclaimerShow != null) disclaimerShow(d); else d.ShowDialog(this);
+            }
+        }
         public int[] TestCreditLink() { return new int[] { copyLabel.Links.Count, copyLabel.Links[0].Start, copyLabel.Links[0].Length, copyLabel.Text.Length }; }
         // the text of the link, of the notice and of the credit is in the middle of the bar (not at the top)
         public bool TestFooterTextMiddle() { return startLink.TextAlign == ContentAlignment.MiddleLeft && updateNote.TextAlign == ContentAlignment.MiddleRight && copyLabel.TextAlign == ContentAlignment.MiddleRight; }
@@ -7518,7 +7565,7 @@ namespace FiveMFrameCap
             DemoResetMode(false);
             // the footer, also with the notice about a newer version (a pretend version number): the link, the notice and the credit apart, inside the bar, on one height, their text fits
             ShowPage(0);
-            ShowUpdateNote("0.8.2");
+            ShowUpdateNote("0.8.4");
             for (int i = 0; i < 10; i++) { Application.DoEvents(); Thread.Sleep(40); }
             DpiCheck.Container(statusBar, "footer with the notice about a newer version", ck);
             ck(startLink.Right <= updateNote.Left && updateNote.Right <= copyLabel.Left, "footer: the link, the notice and the credit stand in this order and apart (" + startLink.Right + " <= " + updateNote.Left + ", " + updateNote.Right + " <= " + copyLabel.Left + ")");
@@ -7749,7 +7796,7 @@ namespace FiveMFrameCap
             cReset.Controls.Add(wipeDesc = Small("Cleans everything: temporary files, logs, login and saved data, and also your settings folder (key binds, graphics, saved server data). FiveM starts like a new install. A backup of the settings is saved first.", 16, 74, CardW - 32 - wipeW - 20, 52, "muted"));
 
             // the switch: off = a quiet line, on = the red block with the button. It is never saved: every start, and every visit to another tab, puts it off again.
-            resetSwitch = new ToggleSwitch(); resetSwitch.Left = CardW - 16 - 48; resetSwitch.Top = 9; resetSwitch.Anchor = AnchorStyles.Top | AnchorStyles.Right; cReset.Controls.Add(resetSwitch);
+            resetSwitch = new ToggleSwitch(); resetSwitch.Danger = true; resetSwitch.Left = CardW - 16 - 48; resetSwitch.Top = 9; resetSwitch.Anchor = AnchorStyles.Top | AnchorStyles.Right; cReset.Controls.Add(resetSwitch);
             Label resetModeText = new Label(); resetModeText.Text = Loc.T("Reset mode"); resetModeText.Font = new Font("Segoe UI", 9.5f, FontStyle.Bold); resetModeText.AutoSize = false; resetModeText.TextAlign = ContentAlignment.MiddleRight;
             resetModeText.Width = 200; resetModeText.Height = 26; resetModeText.Left = CardW - 16 - 48 - 10 - 200; resetModeText.Top = 9; resetModeText.Anchor = AnchorStyles.Top | AnchorStyles.Right; cReset.Controls.Add(resetModeText);
             resetOffLine = Small("Off. The normal clean and the deep clean never touch your key binds or your graphics settings.", 16, 44, CardW - 32, 34, "muted"); cReset.Controls.Add(resetOffLine);
@@ -7776,6 +7823,7 @@ namespace FiveMFrameCap
         }
 
         public void DemoResetMode(bool on) { resetSwitch.Checked = on; }   // for the test pictures
+        public bool TestResetSwitchDanger() { return resetSwitch.Danger; }
 
         string CurrentRoot() { return cacheRoots.SelectedItem as string; }
 
@@ -8630,6 +8678,8 @@ namespace FiveMFrameCap
             new string[] { "Got it", "Begrepen", "Verstanden", "Compris", "Entendido" },
             // activity card: what is going on and how it ended
             new string[] { "Change the language", "Taal wijzigen", "Sprache ändern", "Changer la langue", "Cambiar el idioma" },
+            new string[] { "Show the disclaimer", "De disclaimer tonen", "Den Haftungsausschluss anzeigen", "Afficher l'avertissement", "Mostrar el aviso legal" },
+            new string[] { "Open the page of this program on GitHub", "De pagina van dit programma op GitHub openen", "Die Seite dieses Programms auf GitHub öffnen", "Ouvrir la page de ce programme sur GitHub", "Abrir la página de este programa en GitHub" },
             new string[] { "Working ...", "Bezig ...", "Wird bearbeitet ...", "En cours ...", "Trabajando ..." },
             new string[] { "Applying the frame cap ...", "De FPS-limiet wordt ingesteld ...", "FPS-Limit wird angewendet ...", "Application de la limite de FPS ...", "Aplicando el límite de FPS ..." },
             new string[] { "Asking AMD what is set now ...", "AMD wordt gevraagd wat er nu is ingesteld ...", "AMD wird gefragt, was jetzt eingestellt ist ...", "Demande à AMD ce qui est réglé actuellement ...", "Preguntando a AMD qué hay configurado ahora ..." },
@@ -10984,6 +11034,33 @@ namespace FiveMFrameCap
                     rck(opened.Count == 1 && opened[0] == "https://github.com/Pepreal/FiveM-Toolbox", "a click on \"Made by: ...\" in the main window opens the GitHub page of the program (" + string.Join(",", opened.ToArray()) + ")");
                     opened.Clear(); mu.TestClickUpdateNote();
                     rck(opened.Count == 1 && opened[0] == "https://github.com/Pepreal/FiveM-Toolbox/releases", "a click on the notice in the main window opens the releases page");
+                    // the two buttons next to the program icon (top left): the disclaimer and the GitHub page
+                    int[] tb = mu.TestTitleButtons();
+                    rck(tb[0] <= tb[1] && tb[1] < tb[2] && tb[2] <= tb[3] && tb[3] < tb[4] && tb[4] <= tb[5], "title bar from the left: program icon, disclaimer button, GitHub button, the first tab, none over another (" + string.Join(",", Array.ConvertAll(tb, delegate(int v) { return v.ToString(); })) + ")");
+                    rck(Math.Abs(tb[6] - tb[7]) <= 1 && Math.Abs(tb[6] - tb[8]) <= 1, "the icon and the two buttons are on the same height (" + tb[6] + ", " + tb[7] + ", " + tb[8] + ")");
+                    string[] tbt = mu.TestTitleButtonTips();
+                    rck(tbt[0] == "Show the disclaimer" && tbt[1] == "Open the page of this program on GitHub", "the two buttons have a tool tip (" + tbt[0] + " | " + tbt[1] + ")");
+                    opened.Clear(); mu.TestClickTitle(true);
+                    rck(opened.Count == 1 && opened[0] == "https://github.com/Pepreal/FiveM-Toolbox", "the GitHub button opens the GitHub page of the program (" + string.Join(",", opened.ToArray()) + ")");
+                    string[] shownBtns = null; bool shownDont = true; bool shownParent = false;
+                    mu.TestDisclaimerHook(delegate(DisclaimerForm dd) { shownBtns = dd.TestButtons(); shownDont = dd.TestHasDontBox(); shownParent = dd.StartPosition == FormStartPosition.CenterParent; dd.Show(); rpump(); });
+                    mu.TestClickTitle(false);
+                    rck(shownBtns != null && string.Join("|", shownBtns) == "Got it" && !shownDont && shownParent, "the disclaimer button opens the welcome window to read: one button \"Got it\", no tick box, no Quit, centred on the main window (" + (shownBtns == null ? "nothing shown" : string.Join("|", shownBtns)) + ")");
+                    using (DisclaimerForm dstart = new DisclaimerForm())
+                        rck(string.Join("|", dstart.TestButtons()) == "I understand, continue|Quit" && dstart.TestHasDontBox(), "the welcome window at the start is as before: the tick box, \"I understand, continue\" and Quit (" + string.Join("|", dstart.TestButtons()) + ")");
+                    // the tabs of every language end before the buttons on the right, also in a window of the smallest size
+                    string[] tabNames = new string[] { "Frame cap", "DNS tools", "FiveM cache", "Graphics" };
+                    int worst = 0; string worstLang = "";
+                    foreach (string lg in new string[] { "en", "nl", "de", "fr", "es" })
+                    {
+                        Loc.Force(lg); int need = MainForm.TabsLeft;
+                        foreach (string tn in tabNames) using (ChromeTab ctt = new ChromeTab("", tn)) need += ctt.Width + 4;
+                        need += MainForm.AppearW + 3 * 46 + 12 + 16;     // the panel and the three window buttons on the right, the two window borders, and 16 px of air
+                        if (need > worst) { worst = need; worstLang = lg; }
+                    }
+                    Loc.Force("en");
+                    rck(worst <= MainForm.MainMinWidth, "the smallest window (" + MainForm.MainMinWidth + " px) holds the tabs of every language and the buttons on the right: the widest is \"" + worstLang + "\" and needs " + worst + " px");
+                    rck(mu.TestResetSwitchDanger(), "the Reset mode switch is the red kind (it is on only for the most extreme clean)");
                     mu.Close();
                     using (DisclaimerForm dsh = new DisclaimerForm()) { dsh.StartUpdateCheck(); Thread.Sleep(300); }
                     rck(asked == 1, "GitHub is asked once for each run, also when the welcome window and the main window both ask (asked " + asked + " times)");
@@ -11094,6 +11171,14 @@ namespace FiveMFrameCap
                         ToggleSwitch tsOff = new ToggleSwitch();
                         Color tfTrack, tfRim, tfKnob; tsOff.SwitchColors(out tfTrack, out tfRim, out tfKnob);
                         rck(tfTrack != tsTrack && tfKnob == Theme.Text2 && tfRim == tfTrack, themeName + ": a switch that is off is grey with a grey knob and no blue rim");
+                        ToggleSwitch tsRed = new ToggleSwitch(); tsRed.Danger = true; tsRed.Checked = true;
+                        Color rdTrack, rdRim, rdKnob; tsRed.SwitchColors(out rdTrack, out rdRim, out rdKnob);
+                        Func<Color, bool> isRed = delegate(Color c) { return c.R - Math.Max(c.G, c.B) >= 15; };
+                        rck(isRed(rdTrack) && isRed(rdRim) && isRed(rdKnob) && rdTrack != tsTrack && rdKnob != tsKnob, themeName + ": a red switch that is on has a red track, rim and knob (track " + rdTrack.Name + ", rim " + rdRim.Name + ", knob " + rdKnob.Name + ")");
+                        rck(contrast(rdKnob, rdTrack) >= 2.0 && contrast(rdRim, rdTrack) >= 1.5, themeName + ": the red knob and rim show on the red track (contrast " + contrast(rdKnob, rdTrack).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + " and " + contrast(rdRim, rdTrack).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + ")");
+                        ToggleSwitch tsRedOff = new ToggleSwitch(); tsRedOff.Danger = true;
+                        Color roTrack, roRim, roKnob; tsRedOff.SwitchColors(out roTrack, out roRim, out roKnob);
+                        rck(roTrack == tfTrack && roRim == tfRim && roKnob == tfKnob, themeName + ": a red switch that is off is as grey as every other switch that is off");
                         ThemedCheckBox cbOn = new ThemedCheckBox(); cbOn.Checked = true;
                         Color cbF, cbB, cbM; cbOn.CheckColors(out cbF, out cbB, out cbM);
                         rck(cbF == pbBack && cbB == pbBorder && cbM == pbFore, themeName + ": a tick box that is ticked has the same colours as the blue button (fill " + cbF.Name + ", tick " + cbM.Name + ")");
@@ -11296,7 +11381,7 @@ namespace FiveMFrameCap
                     DisclaimerForm dnu = new DisclaimerForm();
                     dnu.Show();
                     for (int i = 0; i < 14; i++) { Application.DoEvents(); Thread.Sleep(40); }
-                    dnu.ShowUpdate("0.8.2");
+                    dnu.ShowUpdate("0.8.4");
                     for (int i = 0; i < 14; i++) { Application.DoEvents(); Thread.Sleep(40); }
                     DpiCheck.Dialog(dnu, "welcome window with the notice about a newer version", dck);
                     dnu.Close();
@@ -11327,7 +11412,7 @@ namespace FiveMFrameCap
                     }
                 }
                 f.ShowPage(0);
-                f.ShowUpdateNote("0.8.2");   // a pretend version number: GitHub is not asked
+                f.ShowUpdateNote("0.8.4");   // a pretend version number: GitHub is not asked
                 for (int i = 0; i < 12; i++) { Application.DoEvents(); Thread.Sleep(50); }
                 using (Bitmap bmpU = new Bitmap(f.Width, f.Height))
                 {
@@ -11401,12 +11486,23 @@ namespace FiveMFrameCap
                 {
                     wu.Show();
                     for (int i = 0; i < 10; i++) { Application.DoEvents(); Thread.Sleep(50); }
-                    wu.ShowUpdate("0.8.2");
+                    wu.ShowUpdate("0.8.4");
                     for (int i = 0; i < 10; i++) { Application.DoEvents(); Thread.Sleep(50); }
                     using (Bitmap bmp4 = new Bitmap(wu.Width, wu.Height))
                     {
                         Snap(wu, bmp4);
                         bmp4.Save(args[1].Replace(".png", "-welcome-update.png"), System.Drawing.Imaging.ImageFormat.Png);
+                    }
+                }
+                // the welcome window as the disclaimer button of the main window shows it (to read: no tick box, no Quit)
+                using (DisclaimerForm wi = new DisclaimerForm(true))
+                {
+                    wi.Show();
+                    for (int i = 0; i < 10; i++) { Application.DoEvents(); Thread.Sleep(50); }
+                    using (Bitmap bmp5 = new Bitmap(wi.Width, wi.Height))
+                    {
+                        Snap(wi, bmp5);
+                        bmp5.Save(args[1].Replace(".png", "-welcome-info.png"), System.Drawing.Imaging.ImageFormat.Png);
                     }
                 }
                 f.Close();

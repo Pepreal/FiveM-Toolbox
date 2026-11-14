@@ -51,7 +51,7 @@ Reads FiveM's settings files and changes one line at a time. FiveM must be close
 - **Post FX** (`gta5_settings.xml`): set it to Normal for MLOs and cars that look far too bright.
 - **Two game options** from FiveM's own Settings menu: "Fix interface lag" (`nui_useInProcessGpu`) and "Fix stutter at high frame rates" (the Audio frame limiter off, `game_useAudioFrameLimiter`). FiveM itself warns that the first one may cause GPU crashes. For a few players the second one made the stutter worse, so the Toolbox shows a small warning under it. The Graphics tab is for FiveM with the GTA V Legacy edition.
 
-The window is in English, Dutch, German, French and Spanish. It follows the Windows language. To force a language, put a line like `language=nl` (or `de`, `fr`, `es`, `en`) in `settings.txt` in `%LOCALAPPDATA%\FiveMToolbox`.
+The window is in English, Dutch, German, French and Spanish. It follows the Windows language. To force a language, put a line like `language=nl` (or `de`, `fr`, `es`, `en`) in `settings.txt` in `%LOCALAPPDATA%\FiveMToolbox`. You can also click the program icon at the top left to pick a language. The two small buttons next to it show the disclaimer again and open this GitHub page.
 
 ## Download
 

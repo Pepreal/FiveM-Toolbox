@@ -5,13 +5,19 @@ Tags: NEW, CHANGED, FIXED.
 
 ---
 
-## Unreleased
+## v0.8.3 - 2026-11-14 (latest)
+
+**NEW** - **Two small buttons next to the program icon (top left).** *The first one shows the disclaimer again: the welcome window, only to read (no tick box, no Quit, one "Got it" button). The second one opens the GitHub page of the program. The icon itself still opens the language menu.*
+
+**CHANGED** - **The "Reset mode" switch is red when it is on.** *Reset is the most extreme clean, so its switch is red (a dark red track with a red border and a red knob) and not blue like the other switches. Off, it is grey like every other switch.*
+
+**CHANGED** - **The window starts wider (1070 px) and cannot be made narrower than 1060 px.** *The two new buttons take some room in the title bar. 1060 px is enough for the tabs of all five languages (French is the widest).*
 
 **NEW** - **A small orange warning under "Fix stutter at high frame rates".** *For a few players this switch made the stutter worse, not better. FiveM has the audio frame limiter on by default, and this switch turns it off. The warning says so, and tells you to switch the fix off again if that happens. The "Fix interface lag" switch gets no warning. The text is in all five languages.*
 
 **CHANGED** - **The window starts a little taller (1040 px, or as high as the screen allows).** *The warning makes the Graphics tab a few lines longer. The taller window keeps the whole tab on screen without a scroll bar.*
 
-## v0.8.2 - 2026-11-14 (latest)
+## v0.8.2 - 2026-11-14
 
 **CHANGED** - **"Made by: Pepreal 2026" in the main window is a link to the GitHub page of the program.** *A click opens the page. It looks the same as before (grey) and it is underlined when the mouse is over it. The version in front of it is plain text. The notice about a newer version stays an orange line next to the version.*
 
