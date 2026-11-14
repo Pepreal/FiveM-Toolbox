@@ -3232,6 +3232,7 @@ namespace FiveMFrameCap
                 LinkLabel l = (LinkLabel)c;
                 l.BackColor = Color.Transparent; l.LinkColor = IsDark ? ColorTranslator.FromHtml("#59c4ff") : Primary;
                 l.ActiveLinkColor = Primary; l.VisitedLinkColor = l.LinkColor;
+                if (tag == "muted") { l.ForeColor = Text2; l.LinkColor = Text2; l.ActiveLinkColor = Text; l.VisitedLinkColor = Text2; }   // a link that looks like the muted text around it
             }
             else if (c is Label)
             {
@@ -6401,7 +6402,7 @@ namespace FiveMFrameCap
         GlyphButton themeSystem, themeLight, themeDark;
         ToolTip tip = new ToolTip();
         Panel pageCap, pageDns, pageCache, pageGfx, footer, statusBar;
-        Label copyLabel;
+        LinkLabel copyLabel;
         LinkLabel startLink, updateNote;
         // frame cap page
         Label gpuLabel, gpuDrv, gpuMem, modeLabel, capHint, gpuSwitchText;
@@ -6583,7 +6584,11 @@ namespace FiveMFrameCap
             footer.Controls.Add(logPanel);
             statusBar = new Panel(); statusBar.Dock = DockStyle.Bottom; statusBar.Height = 30; statusBar.Tag = "body";
             // the credit on the right ("v0.8.2      Made by: Pepreal 2026", like the FiveM Server Manager), the link to the start window on the left
-            copyLabel = new Label(); copyLabel.Text = "v" + Info.Version + "      " + Loc.T("Made by:") + " " + Info.Owner + " " + Info.Year; copyLabel.Tag = "muted"; copyLabel.AutoSize = false; copyLabel.Dock = DockStyle.Right; copyLabel.TextAlign = ContentAlignment.MiddleRight;
+            // "Made by: Pepreal 2026" is a link to the GitHub page of the program (grey like the rest, underlined when the mouse is over it); the version in front of it is plain text
+            string verPart = "v" + Info.Version + "      ", madePart = Loc.T("Made by:") + " " + Info.Owner + " " + Info.Year;
+            copyLabel = new LinkLabel(); copyLabel.Text = verPart + madePart; copyLabel.LinkArea = new LinkArea(verPart.Length, madePart.Length); copyLabel.LinkBehavior = LinkBehavior.HoverUnderline;
+            copyLabel.LinkClicked += delegate { UpdateCheck.Open(UpdateCheck.RepoUrl); };
+            copyLabel.Tag = "muted"; copyLabel.AutoSize = false; copyLabel.Dock = DockStyle.Right; copyLabel.TextAlign = ContentAlignment.MiddleRight;
             statusBar.Controls.Add(copyLabel);
             // docked on the right like the link is docked on the left: the same height, and the text in the middle of the bar in the same way. As wide as its text.
             // (A label with AutoSize is only as high as its text and sticks to the top of the bar, that is the height difference the user saw.)
@@ -6639,6 +6644,9 @@ namespace FiveMFrameCap
         // for --review-test: left, right, credit left, middle height of the notice, middle height of the credit, visible (1/0)
         public int[] TestUpdateNote(out string text) { text = updateNote.Visible ? updateNote.Text : null; return new int[] { updateNote.Left, updateNote.Right, copyLabel.Left, updateNote.Top + updateNote.Height / 2, copyLabel.Top + copyLabel.Height / 2, updateNote.Visible ? 1 : 0 }; }
         public void TestClickUpdateNote() { UpdateCheck.ClickLink(updateNote); }
+        // "Made by: ..." is a link to the GitHub page, the version in front of it is not
+        public void TestClickCredit() { UpdateCheck.ClickLink(copyLabel); }
+        public int[] TestCreditLink() { return new int[] { copyLabel.Links.Count, copyLabel.Links[0].Start, copyLabel.Links[0].Length, copyLabel.Text.Length }; }
         // the text of the link, of the notice and of the credit is in the middle of the bar (not at the top)
         public bool TestFooterTextMiddle() { return startLink.TextAlign == ContentAlignment.MiddleLeft && updateNote.TextAlign == ContentAlignment.MiddleRight && copyLabel.TextAlign == ContentAlignment.MiddleRight; }
 
@@ -10951,6 +10959,10 @@ namespace FiveMFrameCap
                     rck(muText != null && muText.Contains("99.0.0"), "the main window shows the notice (" + muText + ")");
                     rck(mup[0] > 0 && mup[1] <= mup[2] && Math.Abs(mup[3] - mup[4]) <= 1, "the notice is left of the credit and on its height (notice " + mup[0] + "-" + mup[1] + ", credit from " + mup[2] + ", heights " + mup[3] + " and " + mup[4] + ")");
                     rck(mu.TestFooterTextMiddle(), "the text of the link, the notice and the credit is in the middle of the bar");
+                    int[] crl = mu.TestCreditLink();
+                    rck(crl[0] == 1 && crl[1] == ("v" + Info.Version + "      ").Length && crl[1] + crl[2] == crl[3], "only \"Made by: ...\" is the link, the version in front of it is plain text (link from " + crl[1] + ", " + crl[2] + " long, text " + crl[3] + " long)");
+                    opened.Clear(); mu.TestClickCredit();
+                    rck(opened.Count == 1 && opened[0] == "https://github.com/Pepreal/FiveM-Toolbox", "a click on \"Made by: ...\" in the main window opens the GitHub page of the program (" + string.Join(",", opened.ToArray()) + ")");
                     opened.Clear(); mu.TestClickUpdateNote();
                     rck(opened.Count == 1 && opened[0] == "https://github.com/Pepreal/FiveM-Toolbox/releases", "a click on the notice in the main window opens the releases page");
                     mu.Close();

@@ -5,6 +5,10 @@ Tags: NEW, CHANGED, FIXED.
 
 ---
 
+## Unreleased
+
+**CHANGED** - **"Made by: Pepreal 2026" in the main window is a link to the GitHub page of the program.** *A click opens the page. It looks the same as before (grey) and it is underlined when the mouse is over it. The version in front of it is plain text. The notice about a newer version stays an orange line next to the version.*
+
 ## v0.8.2 - 2026-11-14 (latest)
 
 **CHANGED** - **The blue buttons are an outline.** *The big blue buttons (Apply cap, Clean cache, Use this DNS, Save the settings, and the "I understand" buttons) were a solid blue block with white text. Now they have a dark blue fill, a blue border and blue text. It is the same in the dark and the light theme, the text is easy to read on both (checked by a self test), and a blue button that is switched off is grey. The red button of the Reset stays a solid block. The README pictures show the new look.*
