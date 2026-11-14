@@ -5,6 +5,12 @@ Tags: NEW, CHANGED, FIXED.
 
 ---
 
+## Unreleased
+
+**NEW** - **A small orange warning under "Fix stutter at high frame rates".** *For a few players this switch made the stutter worse, not better. FiveM has the audio frame limiter on by default, and this switch turns it off. The warning says so, and tells you to switch the fix off again if that happens. The "Fix interface lag" switch gets no warning. The text is in all five languages.*
+
+**CHANGED** - **The window starts a little taller (1040 px, or as high as the screen allows).** *The warning makes the Graphics tab a few lines longer. The taller window keeps the whole tab on screen without a scroll bar.*
+
 ## v0.8.2 - 2026-11-14 (latest)
 
 **CHANGED** - **"Made by: Pepreal 2026" in the main window is a link to the GitHub page of the program.** *A click opens the page. It looks the same as before (grey) and it is underlined when the mouse is over it. The version in front of it is plain text. The notice about a newer version stays an orange line next to the version.*

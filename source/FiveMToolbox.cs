@@ -6396,7 +6396,7 @@ namespace FiveMFrameCap
         ActivityCard activity;
         int currentPage = Info.FirstPage;
         int footerGen = 0;
-        NumBox gfxBudget; DropBox gfxPost; Label gfxBudgetNow, gfxPostNow, gfxUiNow, gfxStutterNow, gfxBudgetHint, gfxMeterText; MeterBar gfxMeterBar; bool meterReading; string meterLuid; long meterTotal; VramTracker meterTracker = new VramTracker(); ToggleSwitch gfxUiFix, gfxStutterFix; Card gfxCard; IconButton gfxRecommend; int gfxRecN = -1; IconButton gfxApply, gfxClose, gfxHighest, gfxNormal, gfxOpen;
+        NumBox gfxBudget; DropBox gfxPost; Label gfxBudgetNow, gfxPostNow, gfxUiNow, gfxStutterNow, gfxBudgetHint, gfxMeterText; MeterBar gfxMeterBar; bool meterReading; string meterLuid; long meterTotal; VramTracker meterTracker = new VramTracker(); ToggleSwitch gfxUiFix, gfxStutterFix; Label gfxStutterWarn; Card gfxCard, gfxOptCard; IconButton gfxRecommend; int gfxRecN = -1; IconButton gfxApply, gfxClose, gfxHighest, gfxNormal, gfxOpen;
         string cacheMeasuredRoot = null;
         DateTime cacheMeasuredAt = DateTime.MinValue;
         GlyphButton themeSystem, themeLight, themeDark;
@@ -6526,7 +6526,7 @@ namespace FiveMFrameCap
             Text = Info.AppName + " " + Info.Version + (DnsTool.IsAdmin() ? " - " + Loc.T("administrator") : "") + Finder.TestModeText();
             Icon = Info.AppIcon();
             Rectangle wa = Dpi.LogicalWorkArea();
-            Width = Math.Min(1000, wa.Width - 40); Height = Math.Min(985, wa.Height - 30);
+            Width = Math.Min(1000, wa.Width - 40); Height = Math.Min(1040, wa.Height - 30);
             MinimumSize = new Size(960, 560);
             StartPosition = FormStartPosition.CenterScreen;
             Font = new Font("Segoe UI", 9.5f);
@@ -7316,8 +7316,8 @@ namespace FiveMFrameCap
             cP.Controls.Add(Small("At Normal, Motion Blur Strength and In-Game Depth Of Field Effect are greyed out in the game's graphics menu. High, Very high and Ultra unlock them.", 16, 144, CardW - 32, 22, "muted"));
 
             // the two options of FiveM's own Settings menu that matter before you join a server (two columns: a switch, a title, what it does, what the file says now)
-            Card cN = NewCard("FiveM game options", Ico.Monitor, 418, 160); pageGfx.Controls.Add(cN);
-            int colW = (CardW - 32 - 24) / 2;
+            Card cN = NewCard("FiveM game options", Ico.Monitor, 418, 160); pageGfx.Controls.Add(cN); gfxOptCard = cN;
+            int colW = (CardW - 32 - 24) / 2; int warnBottom = 152;
             Font bold = new Font("Segoe UI", 9.5f, FontStyle.Bold);
             for (int col = 0; col < 2; col++)
             {
@@ -7328,10 +7328,16 @@ namespace FiveMFrameCap
                 UiUtil.Wrapped(cN, col == 0 ? "Fixes 'UI lag' when the GPU is busy. FiveM warns that it may be unstable and cause GPU crashes." : "Turns FiveM's audio frame limiter off, which stops hitches at high frame rates.", x0 + 62, 74, colW - 62, small, "muted", out dsc);
                 Label now = Small("", x0 + 62, 114, colW - 62, 38, "muted"); cN.Controls.Add(now);
                 if (col == 0) { gfxUiFix = sw0; gfxUiNow = now; tip.SetToolTip(sw0, Loc.T("Needs a restart of FiveM. In FiveM's own settings this is the box \"NUI in-process GPU\".")); }
-                else { gfxStutterFix = sw0; gfxStutterNow = now; tip.SetToolTip(sw0, Loc.T("In FiveM's own settings this is the box \"Audio frame limiter\". It is unchecked when this switch is on.")); }
+                else
+                {
+                    gfxStutterFix = sw0; gfxStutterNow = now; tip.SetToolTip(sw0, Loc.T("In FiveM's own settings this is the box \"Audio frame limiter\". It is unchecked when this switch is on."));
+                    // a few players got the opposite effect from this option (more stutter): a small orange warning under it
+                    warnBottom = UiUtil.Wrapped(cN, "Careful: for a few players this switch made the stutter worse, not better. FiveM has the limiter on by default. If that happens, switch this off.", x0 + 62, 152, colW - 62, small, "warn", out gfxStutterWarn);
+                }
             }
 
-            Card cA = NewCard("", Ico.Accept, 590, 150); pageGfx.Controls.Add(cA); gfxCard = cA;
+            cN.Height = Math.Max(160, warnBottom + 10);
+            Card cA = NewCard("", Ico.Accept, cN.Top + cN.Height + 12, 150); pageGfx.Controls.Add(cA); gfxCard = cA;
             int sw = FitW("Save the settings", 240);
             gfxApply = Btn(Ico.Accept, "Save the settings", 16, 44, sw, 44); gfxApply.Tag = "primary"; gfxApply.Font = new Font("Segoe UI", 10.5f, FontStyle.Bold); gfxApply.Click += GfxApplyClick; cA.Controls.Add(gfxApply);
             int cw = FitW("Close FiveM for me", 210);
@@ -7675,6 +7681,10 @@ namespace FiveMFrameCap
         // for --gfx-ui-test only
         public List<string> TestGfxSave(int b, int p, bool ui, bool fix) { return GfxSaveCore(b, p, ui, fix, null); }
         public bool[] TestGfxSwitches() { return new bool[] { gfxUiFix.Checked, gfxStutterFix.Checked }; }
+        public string[] TestStutterWarn() { return new string[] { gfxStutterWarn.Text, (string)gfxStutterWarn.Tag }; }
+        public int TestOptionsWarnCount() { int n = 0; foreach (Control c in gfxOptCard.Controls) if (c is Label && (c.Tag as string) == "warn") n++; return n; }
+        // top and bottom of the warning, bottom of the "now in the file" line, height of the options card, top of the card below it, bottom of the options card
+        public int[] TestStutterWarnBox() { return new int[] { gfxStutterWarn.Top, gfxStutterWarn.Bottom, gfxStutterNow.Bottom, gfxOptCard.Height, gfxCard.Top, gfxOptCard.Bottom }; }
         public void TestGfxRefresh() { gfxInit = false; RefreshGfx(); }
 
         // ---------------------------------------------------------------- FiveM cache page
@@ -8826,6 +8836,11 @@ namespace FiveMFrameCap
                            "In den FiveM-Einstellungen ist das die Option \"Audioframe-Limitierung\". Sie ist abgewählt, wenn dieser Schalter an ist.",
                            "Dans les réglages de FiveM, c'est la case \"Limiteur de trame audio\". Elle est décochée quand cet interrupteur est activé.",
                            "En los ajustes de FiveM es la casilla \"Limitador de fotogramas de audio\". Está desmarcada cuando este interruptor está activado." },
+            new string[] { "Careful: for a few players this switch made the stutter worse, not better. FiveM has the limiter on by default. If that happens, switch this off.",
+                           "Let op: bij een paar spelers maakte deze schakelaar het haperen erger in plaats van beter. In FiveM staat de begrenzer standaard aan. Gebeurt dat, zet de schakelaar dan weer uit.",
+                           "Achtung: Bei einigen Spielern hat dieser Schalter das Ruckeln verschlimmert statt verbessert. In FiveM ist der Limiter standardmäßig an. Dann schalten Sie den Schalter wieder aus.",
+                           "Attention : chez quelques joueurs, cet interrupteur a aggravé les saccades au lieu de les réduire. Dans FiveM, le limiteur est activé par défaut. Dans ce cas, désactivez cet interrupteur.",
+                           "Cuidado: en algunos jugadores este interruptor empeoró los tirones en vez de mejorarlos. En FiveM el limitador está activado por defecto. Si pasa, desactiva este interruptor." },
             new string[] { "On", "Aan", "An", "Activé", "Activado" },
             new string[] { "Off", "Uit", "Aus", "Désactivé", "Desactivado" },
             new string[] { "The interface lag fix is now on.", "De interface-lag-oplossing staat nu aan.", "Die Oberflächen-Lag-Korrektur ist jetzt an.", "La correction du lag de l'interface est maintenant activée.", "La corrección del lag de la interfaz está ahora activada." },
@@ -10280,6 +10295,10 @@ namespace FiveMFrameCap
                     {
                         bool[] sw = uf.TestGfxSwitches();
                         uck(sw[0] && sw[1], "the two switches start ON when the file has nui_useInProcessGpu true and game_useAudioFrameLimiter false");
+                        string[] sww = uf.TestStutterWarn(); int[] swb = uf.TestStutterWarnBox();
+                        uck(uf.TestOptionsWarnCount() == 1, "there is only ONE warning in the game options card: it is not under the interface lag fix");
+                        uck(sww[0].StartsWith("Careful: for a few players this switch made the stutter worse") && sww[1] == "warn", "the stutter fix has a small orange warning under it (" + sww[0] + ")");
+                        uck(swb[0] >= swb[2] && swb[1] <= swb[3] && swb[5] < swb[4], "the warning stands under the \"now in the file\" line and inside its card, and the next card starts below it (" + string.Join(",", Array.ConvertAll(swb, delegate(int v) { return v.ToString(); })) + ")");
                         List<string> parts = uf.TestGfxSave(20, 0, false, true);
                         uck(parts.Count == 1 && parts[0] == "The interface lag fix is now off." && GfxTool.ReadFlag(GfxTool.UiFixName) == 0 && GfxTool.ReadFlag(GfxTool.LimiterName) == 0, "interface lag fix off: only nui_useInProcessGpu changed (false), the limiter stays off (" + string.Join("|", parts.ToArray()) + ")");
                         parts = uf.TestGfxSave(20, 0, false, false);

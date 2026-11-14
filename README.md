@@ -49,7 +49,7 @@ Reads FiveM's settings files and changes one line at a time. FiveM must be close
 - **Extended Texture Budget** (`vid_budgetScale` in `fivem.cfg`), with a "Highest" button and a "Recommended" button. The advice depends on the video memory of your card and is shown green, orange or red. It is an estimate.
 - **Live meter:** how much video memory the FiveM game really uses on your dedicated card, read from Windows. Needs Windows 10 version 1709 or newer.
 - **Post FX** (`gta5_settings.xml`): set it to Normal for MLOs and cars that look far too bright.
-- **Two game options** from FiveM's own Settings menu: "Fix interface lag" (`nui_useInProcessGpu`) and "Fix stutter at high frame rates" (the Audio frame limiter off, `game_useAudioFrameLimiter`). FiveM itself warns that the first one may cause GPU crashes. The Graphics tab is for FiveM with the GTA V Legacy edition.
+- **Two game options** from FiveM's own Settings menu: "Fix interface lag" (`nui_useInProcessGpu`) and "Fix stutter at high frame rates" (the Audio frame limiter off, `game_useAudioFrameLimiter`). FiveM itself warns that the first one may cause GPU crashes. For a few players the second one made the stutter worse, so the Toolbox shows a small warning under it. The Graphics tab is for FiveM with the GTA V Legacy edition.
 
 The window is in English, Dutch, German, French and Spanish. It follows the Windows language. To force a language, put a line like `language=nl` (or `de`, `fr`, `es`, `en`) in `settings.txt` in `%LOCALAPPDATA%\FiveMToolbox`.
 
